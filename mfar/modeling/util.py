@@ -49,7 +49,7 @@ def prepare_model(
         ]
         if normalize:
             modules.append(Normalize())
-        return tokenizer, SentenceTransformer(modules=modules), None
+        return tokenizer, SentenceTransformer(modules=modules, device="cpu"), None
 
     # Else maybe it is a directory, try to load model
     else:
@@ -68,7 +68,7 @@ def prepare_model(
         ]
         if normalize:
             modules.append(Normalize())
-        return tokenizer, SentenceTransformer(modules=modules), None
+        return tokenizer, SentenceTransformer(modules=modules, device="cpu"), None
 
 def read_and_create_indices(corpus_path, dataset_name, field_info, temp_dir, encoder):
     corpus = list(trec.read_corpus(corpus_path))

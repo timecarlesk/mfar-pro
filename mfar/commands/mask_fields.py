@@ -110,6 +110,7 @@ def main(*,
 
     module = RetrievalTrainingModule.load_from_checkpoint(
         checkpoint_path,
+        map_location="cpu",
         corpus=corpus_contents,
         indices_dict=indices_dict,
         vectors_dict=vectors_dict,

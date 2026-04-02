@@ -52,6 +52,16 @@ AMAZON_FIELDS = [
     ("title", 128),
 ]
 
+MEMORY_FIELDS = [
+    ("full_text", 512),
+    ("user_content", 512),
+    ("entities", 64),
+    ("topic_summary", 128),
+    ("action_outcome", 128),
+    ("first_utterance", 128),
+    ("temporal_info", 32),
+]
+
 # What's that book dataset: unused in paper.
 WTB_FIELDS = [
     ("author", 16),
@@ -79,7 +89,8 @@ FIELDS_DICT = {
     "mag": MAG_FIELDS,
     "prime": PRIME_FIELDS,
     "amazon": AMAZON_FIELDS,
-    "whatsthatbook": WTB_FIELDS
+    "whatsthatbook": WTB_FIELDS,
+    "memory": MEMORY_FIELDS,
 }
 DATASET_NAMES = list(FIELDS_DICT.keys())
 SCHEMAS = {name: generate_schema(FIELDS_DICT[name], name) for name in DATASET_NAMES}

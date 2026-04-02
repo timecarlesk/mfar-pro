@@ -230,7 +230,7 @@ class HybridContrastiveLoss(DecomposedContrastiveLoss):
         pos_docs: List[str], # List[Batch]
         d_neg: Optional[torch.Tensor],  # R[Batch, Field, NegSample, Emb]
         neg_docs: Optional[List[str]], # List[Batch]
-        query_ids: List[int],
+        query_ids: list,
         sparse_scores: Optional[Dict] = None,
     ) -> torch.Tensor:
         use_multi_gpu = self.all_gather_multi_gpu and torch.distributed.is_initialized()
@@ -304,7 +304,7 @@ class HybridContrastiveLoss(DecomposedContrastiveLoss):
         self,
         queries, #[QueryBatch]
         doc_ids, # [DocBatch]
-        query_ids: List[int], # [QueryBatch]
+        query_ids: list, # [QueryBatch]
         sparse_scores: Optional[Dict],
     ): #-> R[QueryBatch, DocBatch * Devices, num_fields]:
         """

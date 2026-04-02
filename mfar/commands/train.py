@@ -62,6 +62,7 @@ def main(*,
          prefix: bool = False,
          run_one_iteration = False,
          use_batchnorm: bool = False,
+         scope_map_path: Optional[str] = None,
          ):
 
     torch.set_float32_matmul_precision("high")
@@ -137,6 +138,15 @@ def main(*,
         sparse_scores = None
 
 
+    # Load per-conversation scope map if provided (for memory datasets)
+    scope_map = None
+    if scope_map_path:
+        with open(scope_map_path) as f:
+            scope_map = json.load(f)
+        print(f"Loaded scope map from {scope_map_path} "
+              f"({len(scope_map.get('doc_scope', {}))} docs, "
+              f"{len(scope_map.get('query_scope', {}))} queries)")
+
     data_module = RetrievalDataModule(
         tokenizer=tokenizer,
         queries_path=f"{queries}",
@@ -155,6 +165,7 @@ def main(*,
         indices_dict=indices_dict,
         prefix=prefix,
         trec_val_freq=trec_val_freq,
+        scope_map=scope_map,
     )
     module = RetrievalTrainingModule(
         encoder=encoder,

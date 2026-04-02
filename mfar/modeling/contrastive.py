@@ -50,6 +50,7 @@ class RetrievalDataModule(pl.LightningDataModule):
                  indices_dict: Dict[str, Index] = None,
                  prefix: bool = False,
                  trec_val_freq: int = 0,
+                 scope_map: Optional[Dict] = None,
                  ):
         super().__init__()
         self.tokenizer = tokenizer
@@ -74,6 +75,7 @@ class RetrievalDataModule(pl.LightningDataModule):
             n_retrieve=negative_sampling_params[0],
             n_bottom=negative_sampling_params[1],
             n_sample=negative_sampling_params[2],
+            scope_map=scope_map,
         )]
         self.train_qrels = trec.QRels.from_text_io(open(f"{self.queries_path}/train.qrels"))
         self.train: Optional[Dataset] = None
@@ -426,7 +428,7 @@ class RetrievalTrainingModule(pl.LightningModule):
         # Dims need to be: R[Batch, n_fields, Emb] for x_pos_encoded and R[Batch, n_fields, NegSample, Emb] for x_neg_encoded
         queries = [batch.instances[idx].query.text for idx in range(len(batch.instances))]
         any_field_key = list(self.field_info.keys())[0]
-        query_ids = [int(batch.instances[idx].query._id) for idx in range(len(batch.instances))]
+        query_ids = [batch.instances[idx].query._id for idx in range(len(batch.instances))]
         pos_docs = [batch.instances[idx].pos_cand[any_field_key][0] for idx in range(len(batch.instances))]
         neg_docs = [batch.instances[idx].neg_cands[any_field_key][0][0] for idx in range(len(batch.instances))] # Assume only one negative
         queries = pickle.dumps(queries)

@@ -110,6 +110,11 @@ def format_dict(item_dict):
     return "; ".join(all_strings)
 
 
+def format_memory_full(data: dict) -> str:
+    """Formats a memory document using its full_text field."""
+    return data.get("full_text", "")
+
+
 def format_stark(data: Tuple[str, Any], dataset_name: str) -> Tuple[str, Any]:
     """
     Formats the information in the original STaRK format (as close as possible).
@@ -123,7 +128,9 @@ def format_stark(data: Tuple[str, Any], dataset_name: str) -> Tuple[str, Any]:
     """
 
     _id, _data = data
-    if dataset_name == "amazon":
+    if dataset_name == "memory":
+        doc = format_memory_full(_data)
+    elif dataset_name == "amazon":
         doc = format_amazon(_data)
     elif dataset_name == "mag":
         doc = format_mag(_data)
