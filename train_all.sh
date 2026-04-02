@@ -18,14 +18,12 @@ python -m mfar.commands.train \
     --temp-dir /tmp/mfar_temp/prime \
     --out ./output/prime \
     --dataset_name prime \
-    --encoder_lr 5e-5 \
-    --weights_lr 1e-2 \
+    --encoder_lr 1e-5 \
+    --weights_lr 1e-1 \
     --train-batch-size 12 \
-    --dev-batch-size 32 \
     --field_names "all_dense,all_sparse,single_dense,single_sparse" \
     --trec_val_freq 0 \
-    --num_gpus 8 \
-    --use_batchnorm \
+    --num_gpus 2 \
     --additional_partition test \
     2>&1 | tee output/prime/train.log
 
