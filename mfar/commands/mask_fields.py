@@ -47,6 +47,10 @@ def main(*,
          prefix: bool = False,
          checkpoint_dir: Optional[str] = None,
          debug: bool = False,
+         negation_cache: Optional[str] = None,
+         memory_alpha: float = 1.0,
+         use_boost: bool = True,
+         use_suppress: bool = False,
          ):
 
     torch.set_float32_matmul_precision("high")
@@ -120,6 +124,15 @@ def main(*,
         field_info=field_info,
         out_dir=out,
     )
+
+    # Load negation memory if provided
+    if negation_cache:
+        from failure_analysis.type_b_memory.negation_memory_module import load_negation_memory
+        module.negation_memory = load_negation_memory(
+            negation_cache, field_info, alpha=memory_alpha,
+            use_boost=use_boost, use_suppress=use_suppress,
+        )
+        print(f"Negation memory loaded (alpha={memory_alpha}, boost={use_boost}, suppress={use_suppress})")
 
     trainer = pl.Trainer(
         max_epochs=max_epochs,

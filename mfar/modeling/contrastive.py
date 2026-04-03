@@ -296,6 +296,7 @@ class RetrievalTrainingModule(pl.LightningModule):
 
         self.qres_output: Optional[TextIO] = None
         self.additional_qres_output: Optional[TextIO] = None
+        self.negation_memory = None  # Set via load_negation_memory()
 
         # Unpack precomputed sparse scores to dicts
         if sparse_scores:
@@ -693,7 +694,12 @@ class RetrievalTrainingModule(pl.LightningModule):
             }
 
             x_encoded = self.encoder(q_toks)["sentence_embedding"]
-            scores = self.hybrid_contrastive_loss_fn.mixture_of_fields_layer(all_tens.t(), x_encoded)
+            logit_bias = None
+            if self.negation_memory is not None:
+                logit_bias = self.negation_memory.get_logit_bias(q._id, num_fields=all_tens.shape[0])
+                if logit_bias is not None:
+                    logit_bias = logit_bias.to(x_encoded.device)
+            scores = self.hybrid_contrastive_loss_fn.mixture_of_fields_layer(all_tens.t(), x_encoded, logit_bias=logit_bias)
 
             values, indices = torch.topk(scores, k=100, dim=1)
 

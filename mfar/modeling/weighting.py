@@ -17,6 +17,7 @@ class LinearWeights(torch.nn.Module):
     def forward(self,
                 x,   # [Batch, Samples, Field]
                 q,   # Optional([Batch, Emb])
+                logit_bias=None, # Optional([1, Field]) — additive bias on weight logits
         ) -> torch.Tensor: # [Batch, Samples]
         """
         The batch size of x and q must be the same or else this should fail, or the math will be wrong.
@@ -25,5 +26,7 @@ class LinearWeights(torch.nn.Module):
             weights = q @ self.weight # [Batch, Emb] * [Emb, Field] -> [Batch, Field]
         else:
             weights = self.weight.transpose(1, 0) # [1, Field]
+        if logit_bias is not None:
+            weights = weights + logit_bias # [Batch, Field]
         weights_dist = torch.softmax(weights, dim=1) # [ ?, Field]
         return torch.sum(weights_dist.unsqueeze(1) * x, dim=-1)
