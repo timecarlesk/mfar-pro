@@ -1,0 +1,22 @@
+Looking at the traces, I see a clear pattern: the LLM is giving reasonable scores (7-9) to gold documents, but it's also giving equally high or higher scores to competing documents. The issue isn't that the LLM can't see the right content or doesn't understand negation - it's that it's being too generous with high scores, making it hard to distinguish the truly best matches.
+
+The current prompt asks for a 0-10 scale but doesn't encourage the LLM to be discriminating enough. I'll modify the prompt to encourage more selective scoring and better differentiation between good and excellent matches.
+
+```json
+{
+  "field_priority": {
+    "default": []
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nBe selective with high scores. Score 0-10 where:\n- 0-3: Irrelevant or contradicts the query requirements\n- 4-6: Partially relevant but missing key negation/constraint requirements  \n- 7-8: Good match with most negation/constraint requirements met\n- 9-10: Exceptional match perfectly satisfying all query requirements\n\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.7
+  },
+  "top_k": 50,
+  "round": 4,
+  "rationale": "Enhanced prompt to encourage more discriminating scores. Failure cases show LLM giving similar high scores (7-9) to both gold docs and competitors, making ranking difficult. Added explicit scoring guidelines to encourage selectivity and better differentiation between good vs exceptional matches."
+}
+```

@@ -127,7 +127,7 @@ def main(*,
 
     # Load negation memory if provided
     if negation_cache:
-        from failure_analysis.type_b_memory.negation_memory_module import load_negation_memory
+        from failure_analysis.type_b_memory.logit_bias.negation_memory_module import load_negation_memory
         module.negation_memory = load_negation_memory(
             negation_cache, field_info, alpha=memory_alpha,
             use_boost=use_boost, use_suppress=use_suppress,

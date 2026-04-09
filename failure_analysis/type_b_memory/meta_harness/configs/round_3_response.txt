@@ -1,0 +1,24 @@
+Looking at the traces, I see a clear pattern in the failure cases: the LLM is consistently giving low scores (0-7) to gold documents while giving higher scores (7-9) to non-gold documents that get promoted to top positions. This suggests the LLM is not properly understanding or weighting the negation aspects of these queries.
+
+The key issue appears to be with the alpha blending - we're trusting the LLM too much (alpha=0.7) when it's systematically underscoring relevant negation documents. The mFAR scores for gold documents are often reasonable, but the high LLM weight is dragging down the final scores.
+
+Let me reduce the LLM influence by lowering alpha, which will give more weight to the mFAR scores that seem to be more reliable for negation queries.
+
+```json
+{
+  "field_priority": {
+    "default": []
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nScore 0-10 where 0=completely irrelevant, 10=perfect match.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.4
+  },
+  "top_k": 50,
+  "round": 3,
+  "rationale": "Reduced alpha from 0.7 to 0.4 to decrease LLM influence. Failure cases show LLM consistently underscoring gold documents (giving 0-7) while overscoring competitors (7-9), but mFAR scores for gold docs are often reasonable. Lower alpha gives more weight to mFAR retrieval scores which appear more reliable for negation queries."
+}
+```

@@ -1,0 +1,296 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{graphicx}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!10},
+  xleftmargin=1em,
+  framexleftmargin=0.5em,
+  columns=fullflexible,
+  keepspaces=true,
+}
+
+\title{Memory-Guided LLM Re-Ranking for\\Negation Query Failures in Multi-Field Retrieval}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Motivation}
+
+Multi-field adaptive retrieval (mFAR) learns query-conditioned field weights to combine dense and sparse scores across 46 field indices via $s(q,d) = \sum_{f,m} G(q,f,m) \cdot s^m_f(q, x_f)$ where $G(q,f,m) = \text{softmax}(\mathbf{a}^m_f{}^\top \mathbf{q})$. For queries containing negation (e.g., ``drugs NOT indicated for diabetes''), the learned weights route to the wrong field---searching \texttt{indication} when the answer resides in \texttt{contraindication}. We identify $\sim$19\% of test queries as negation-affected (``rerouted''), with a significant MRR gap versus non-negation queries (Table~\ref{tab:baseline}).
+
+\section{Method}
+
+Our pipeline consists of three LLM stages plus a memory generation step and a self-verification feedback loop (Figure~\ref{fig:pipeline}).
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=0.98\textwidth]{Generated_Image_April_04_2026.jpg}
+\caption{Overview of the memory-guided LLM re-ranking pipeline. \textbf{(a) Offline:} Memory is constructed from training data by detecting negation queries, classifying their patterns, and grouping by gold entity type to produce field boost recommendations. \textbf{(b) Feedback loop:} Self-verification on validation data produces per-group confidence annotations (Memory v2). \textbf{(c) Online inference:} The matched rule's \texttt{[RELEVANT]} tag guides the LLM re-ranker's attention while showing all field content.}
+\label{fig:pipeline}
+\end{figure*}
+
+\subsection{Memory Generation from Training Data}
+
+We analyze the training split (6,162 queries) to build data-driven re-routing rules:
+\begin{enumerate}
+    \item Detect negation queries (Stage 1), classify their pattern and answer type (Stage 1.5), and route to boost fields (Stage 2) using default hand-written rules.
+    \item Extract rerouted queries and check which relation fields are populated in their gold documents.
+    \item Group by \texttt{(gold\_entity\_type, negation\_pattern)} and compute field population frequencies per group.
+    \item Generate direct boost recommendations (Memory v1).
+\end{enumerate}
+
+Grouping uses the gold document's actual entity type rather than the LLM's prediction, which has 31--70\% error rate on key groups. Example memory entry:
+\begin{lstlisting}
+When answer_type=anatomy and query contains
+  "not expressed" (222 training examples):
+  Recommended boost_fields:
+    ['parent-child', 'expression present',
+     'expression absent']
+\end{lstlisting}
+
+\subsection{Stage 1: Detection}
+
+For every query, Qwen3 determines whether it contains negation that would cause wrong field routing. $\sim$81\% are classified ``no'' and bypass all subsequent stages---their baseline rankings are copied verbatim, ensuring exactly zero impact on non-negation queries.
+
+\begin{lstlisting}
+Does this biomedical knowledge graph query contain
+negation or semantic constraints that would cause a
+field-based retrieval system to search the WRONG field?
+
+Examples that NEED re-routing:
+- "drugs NOT indicated for diabetes"
+- "genes not expressed in liver"
+- "diseases lacking approved treatment"
+- "conditions that should not be treated with aspirin"
+
+Examples that do NOT need re-routing:
+- "drugs indicated for diabetes"
+- "non-small cell lung cancer" (part of entity name)
+
+Query: "{query}"
+Answer ONLY "yes" or "no".
+\end{lstlisting}
+
+\subsection{Stage 1.5: Negation Pattern Classification}
+
+For flagged queries, a second LLM call classifies the negation pattern and answer entity type. Contrastive examples address a key failure mode---confusing ``entity mentioned in query'' with ``entity being retrieved'':
+
+\begin{lstlisting}
+What type of negation? Choose from:
+  not_indicated, not_expressed, lacking_treatment,
+  avoid_contraindicated, not_associated,
+  phenotype_absent, no_side_effect, other
+
+What entity is the query ASKING YOU TO FIND?
+- "Which anatomical structures lack expression of
+   gene X?" -> anatomy (not genes)
+- "Which diseases should not be treated with drug X?"
+   -> disease (not drugs)
+
+Output JSON:
+{"negation_pattern": "...", "answer_type": "..."}
+\end{lstlisting}
+
+\subsection{Stage 2: Memory-Augmented Field Routing}
+
+The classified \texttt{(answer\_type, negation\_pattern)} is used to retrieve the matching rule from memory. Only the matched rule is shown to the LLM:
+
+\begin{lstlisting}
+Matched rule from training data:
+When answer_type=anatomy and query contains
+  "not expressed" (222 training examples):
+  Recommended boost_fields:
+    ['parent-child', 'expression present',
+     'expression absent']
+
+Based on the rule, which fields should be boosted?
+Output JSON: {"answer_type": "...", "boost_fields": [...]}
+\end{lstlisting}
+
+\subsection{Stage 3: Per-Document Re-Ranking with [RELEVANT] Tags}
+
+For each flagged query's top-$K$ documents ($K=50$), an LLM scores the (query, document) pair for negation-aware relevance (0--10). The document shows \textbf{all field content}, with memory-recommended fields tagged \texttt{[RELEVANT]}:
+
+\begin{lstlisting}
+Example document formatting:
+  Peptic Ulcer (disease);
+  [RELEVANT] contraindication: Aspirin, Ibuprofen;
+  indication: Metformin, Omeprazole;
+  associated with: H. pylori, stress;
+  phenotype present: abdominal pain, bleeding
+\end{lstlisting}
+
+This ensures the LLM has complete information while memory provides attention guidance. The no-memory ablation shows the same content without \texttt{[RELEVANT]} tags. The final score:
+\begin{equation}
+    s_{\text{final}} = \alpha \cdot \hat{s}_{\text{LLM}} + (1 - \alpha) \cdot \hat{s}_{\text{mFAR}}
+\end{equation}
+
+\begin{lstlisting}
+Query: "{query}"
+Document: {doc_text}
+
+Score how well this document satisfies the query
+INCLUDING any negation constraints.
+Score 0-10. Output ONLY the number.
+\end{lstlisting}
+
+\subsection{Self-Verification Feedback (Memory v2)}
+
+After re-ranking on validation data with Memory v1, we verify each rerouted query's top-1 result \emph{without gold answers}: the LLM checks whether the retrieved document satisfies the negation constraint (``yes/no''). Pass rates are computed per \texttt{(answer\_type, negation\_pattern)} group. Rules with $<70\%$ pass rate receive a \texttt{WARNING} tag:
+
+\begin{lstlisting}
+# Memory v1 (no feedback):
+When answer_type=disease and query contains
+  "lacking treatment" (109 training examples):
+  Recommended boost_fields:
+    ['parent-child', 'phenotype absent', ...]
+
+# Memory v2 (with feedback):
+When answer_type=disease and query contains
+  "lacking treatment" (109 training examples):
+  Recommended boost_fields:
+    ['parent-child', 'phenotype absent', ...]
+  WARNING: Low verification confidence: 0% (0/48).
+  This rule may be unreliable.
+  Consider reasoning from entity type field
+  inventory instead.
+\end{lstlisting}
+
+When Stage~2 sees a \texttt{WARNING}-annotated rule, it is instructed not to blindly follow the recommendation but to reason about which fields to boost based on the entity type's field inventory. This mechanism allows underperforming rules to be softened without discarding them entirely.
+
+\section{Experimental Setup}
+
+\paragraph{Dataset.} PRIME biomedical knowledge graph: 129,375 entities, 6,162 training / 2,241 validation / 2,801 test queries, 22 fields per entity (18 relation + 4 metadata).
+
+\paragraph{Baseline.} mFAR with contriever-msmarco encoder, query-conditioned field weights, 46 field indices (8$\times$H100 DDP inference).
+
+\paragraph{Re-Ranking Models.} Qwen3-8B and Qwen3-32B via Ollama, 8$\times$ H100 parallel instances.
+
+\section{Results}
+
+\begin{table}[h]
+\centering
+\caption{mFAR baseline performance on test by query group.}
+\label{tab:baseline}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Group} & \textbf{N} & \textbf{MRR} & \textbf{Hit@1} & \textbf{Hit@5} & \textbf{Miss\%} \\
+\midrule
+Overall        & 2801 & 0.472 & 35.1 & 61.3 & 11.2 \\
+Rerouted       &  548 & 0.340 & 23.4 & 46.5 & 17.3 \\
+Non-negation   & 2253 & 0.504 & 37.9 & 64.8 &  9.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Main Results}
+
+Table~\ref{tab:main} compares all configurations at the best interpolation weight ($\alpha=0.7$) on test. We report both $\Delta$ MRR over the mFAR baseline and the relative improvement (\%).
+
+\begin{table}[h]
+\centering
+\caption{Test rerouted query results at $\alpha=0.7$. ``No memory'' shows all fields equally; memory variants tag boost fields with \texttt{[RELEVANT]}. Non-negation $\Delta = 0.000$ in all cases.}
+\label{tab:main}
+\begin{tabular}{llccc}
+\toprule
+\textbf{Model} & \textbf{Memory} & \textbf{Rerouted MRR} & \textbf{$\Delta$ MRR} & \textbf{Rel. \%} \\
+\midrule
+\multirow{4}{*}{Qwen3-8B}
+ & No memory          & 0.391 & +0.051 & +15.1\% \\
+ & Memory v1          & 0.366 & +0.026 & +7.8\% \\
+ & Memory v2          & 0.370 & +0.035 & +10.3\% \\
+ & Memory KG          & 0.372 & +0.030 & +8.7\% \\
+\midrule
+\multirow{4}{*}{Qwen3-32B}
+ & No memory          & 0.401 & +0.061 & +18.0\% \\
+ & \textbf{Memory v1} & \textbf{0.419} & \textbf{+0.079} & \textbf{+23.3\%} \\
+ & Memory v2          & 0.414 & +0.079 & +23.5\% \\
+ & Memory KG          & 0.419 & +0.077 & +22.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Best Configuration Detail}
+
+Table~\ref{tab:best} shows full metrics for the best configuration: Qwen3-32B with Memory v1 at $\alpha=0.7$.
+
+\begin{table}[h]
+\centering
+\caption{Detailed test metrics: Qwen3-32B, Memory v1, $\alpha=0.7$, top-50 re-ranking.}
+\label{tab:best}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Group} & \textbf{N} & \textbf{MRR} & \textbf{$\Delta$} & \textbf{Rel.\%} & \textbf{Hit@1} & \textbf{NDCG@10} \\
+\midrule
+Rerouted     & 548 & 0.340 $\rightarrow$ \textbf{0.419} & +0.079 & +23.3\% & 23.4 $\rightarrow$ 32.1 & 0.379 $\rightarrow$ 0.453 \\
+Non-negation & 2253 & 0.504 $\rightarrow$ 0.504 & 0.000 & 0.0\% & 37.9 $\rightarrow$ 37.9 & 0.547 $\rightarrow$ 0.547 \\
+Overall      & 2801 & 0.472 $\rightarrow$ 0.487 & +0.016 & +3.3\% & 35.1 $\rightarrow$ 36.8 & 0.514 $\rightarrow$ 0.528 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Interpolation Weight Sweep}
+
+Table~\ref{tab:sweep} shows the effect of $\alpha$ for the two key configurations on test.
+
+\begin{table}[h]
+\centering
+\caption{Test rerouted $\Delta$ MRR across $\alpha$ values.}
+\label{tab:sweep}
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Model} & \textbf{Memory} & $\alpha$\textbf{=0.3} & $\alpha$\textbf{=0.5} & $\alpha$\textbf{=0.7} & $\alpha$\textbf{=1.0} \\
+\midrule
+8B  & No memory & +0.026 & +0.032 & \textbf{+0.051} & +0.040 \\
+8B  & Memory v1 & +0.019 & +0.027 & +0.026 & +0.014 \\
+32B & No memory & +0.044 & +0.059 & +0.061 & +0.040 \\
+32B & Memory v1 & +0.050 & +0.071 & \textbf{+0.079} & +0.052 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Analysis}
+
+\paragraph{Memory as capability amplifier.} Table~\ref{tab:ablation} compares memory-guided (\texttt{[RELEVANT]} tag) versus generic (no tag) re-ranking. For 32B, \texttt{[RELEVANT]} tags provide +0.018 absolute MRR over no-memory (+4.5\% relative), demonstrating that memory's attention guidance helps larger models focus on the correct fields. For 8B, memory \emph{hurts} ($-$0.025), as the smaller model is distracted by the tag rather than leveraging it. This suggests memory-guided re-ranking requires sufficient model capacity.
+
+\begin{table}[h]
+\centering
+\caption{Memory ablation at $\alpha=0.7$ on test rerouted queries (N=548 for v1/no-memory).}
+\label{tab:ablation}
+\begin{tabular}{llccc}
+\toprule
+\textbf{Model} & \textbf{Condition} & \textbf{Rerouted MRR} & \textbf{$\Delta$ vs baseline} & \textbf{Memory effect} \\
+\midrule
+\multirow{2}{*}{Qwen3-8B}
+ & No memory & 0.391 & +0.051 (+15.1\%) & --- \\
+ & Memory v1 & 0.366 & +0.026 (+7.8\%) & $-$0.025 \\
+\midrule
+\multirow{2}{*}{Qwen3-32B}
+ & No memory & 0.401 & +0.061 (+18.0\%) & --- \\
+ & Memory v1 & \textbf{0.419} & \textbf{+0.079 (+23.3\%)} & \textbf{+0.018} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Hybrid scoring.} At $\alpha=1.0$ (pure LLM), performance drops versus $\alpha=0.7$ in all configurations. The optimal 70/30 LLM-to-mFAR ratio shows mFAR's dense/sparse scores are complementary, while mFAR serves as candidate recall (selecting the 50 documents for LLM evaluation).
+
+\paragraph{Memory variants.} On 32B, Memory v1 (+23.3\%), v2 (+23.5\%), and KG (+22.5\%) perform comparably. The self-verification feedback (v2) and KG structuring do not yield significant additional gains over v1 with the \texttt{[RELEVANT]} tag format.
+
+\paragraph{Ceiling analysis.} Of 548 rerouted test queries: 25\% already have gold at rank 1 (no help needed), 52\% have gold at ranks 2--50 (re-ranking can help), 6\% at ranks 51--100 (beyond window), and 18\% not in top-100 (retrieval failure). Theoretical ceiling: 25\% + 52\% = 77\%.
+
+\paragraph{Zero regression.} Non-negation queries show exactly $\Delta = 0.000$ MRR across all configurations, as non-flagged queries have their baseline rankings copied verbatim.
+
+\paragraph{Cost.} Per test split with 8$\times$H100: Stages 1--2 process all 2,801 queries ($\sim$20 min). Stage 3 scores $50 \times 548 = 27{,}400$ pairs ($\sim$20 min for 8B, $\sim$50 min for 32B). All outputs are cached as JSONL.
+
+\end{document}

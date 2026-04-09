@@ -1,0 +1,16 @@
+{
+  "field_priority": {
+    "default": []
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. For negation queries (e.g., \"not expressed\", \"contraindicated\", \"lack\"), a document is relevant if it contains data about the constrained relationship, even if that data shows the positive case. For example, if the query asks for genes \"not expressed\" in tissue X, a document showing expression data for tissue X is highly relevant because it allows determining absence.\n\nScore 0-10 where 0=completely irrelevant, 10=perfect match for the negation constraint.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.7
+  },
+  "top_k": 50,
+  "round": 3,
+  "rationale": "Modified prompt to explicitly clarify that for negation queries, documents containing data about the constrained relationship (even positive data) are relevant because they enable determining the negation. Many failures showed LLM giving low scores to documents with relevant constraining data."
+}

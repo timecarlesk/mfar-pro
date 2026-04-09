@@ -1,0 +1,27 @@
+Looking at the traces, I see a clear pattern in the failure cases: the LLM is consistently giving low scores (0-7) to gold documents while giving high scores (7-9) to competitors. This suggests the LLM might be struggling to understand what makes a document relevant for negation queries.
+
+The key insight is that many failure cases involve queries where the LLM needs to see specific field content to properly evaluate relevance. For example, contraindication queries need to see contraindication field content, expression absence queries need to see expression data, etc.
+
+Since previous rounds showed that changing field_priority globally hurt performance, I'll take a more targeted approach by using pattern-specific field priorities for the most problematic negation patterns, while keeping the prompt focused on the core scoring issue.
+
+```json
+{
+  "field_priority": {
+    "default": [],
+    "not_expressed": ["expression present", "expression absent", "ppi", "interacts with", "associated with"],
+    "contraindication": ["contraindication", "indication", "associated with", "parent-child"],
+    "lack_expression": ["expression present", "expression absent", "parent-child"]
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nIMPORTANT: A document that contains the relevant negative information (contraindications, absent expression, lack of treatment options) is highly relevant and should score 8-10. A document that only contains positive information when negation is requested should score 0-3.\n\nScore 0-10 where 0=completely irrelevant, 10=perfect match.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.7
+  },
+  "top_k": 50,
+  "round": 5,
+  "rationale": "Targeted field_priority for specific negation patterns to ensure LLM sees relevant field content for proper scoring. Added pattern-specific priorities for 'not_expressed', 'contraindication', and 'lack_expression' queries while keeping default empty for other patterns. Enhanced prompt to clarify that documents with negative information are highly relevant for negation queries."
+}
+```

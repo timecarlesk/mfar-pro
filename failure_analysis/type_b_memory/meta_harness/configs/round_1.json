@@ -1,0 +1,24 @@
+{
+  "field_priority": {
+    "default": [
+      "contraindication",
+      "indication",
+      "expression_present",
+      "expression_absent",
+      "associated_with",
+      "phenotype_present",
+      "phenotype_absent"
+    ]
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nScore 0-10 where 0=completely irrelevant, 10=perfect match.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.7
+  },
+  "top_k": 50,
+  "round": 1,
+  "rationale": "Changed field_priority from empty to show key fields for negation queries. Many failure cases showed LLM giving very low scores to gold docs, likely because it couldn't see relevant field content to evaluate negation constraints like 'not indicated', 'not expressed', etc. Showing contraindication, indication, expression fields should help LLM better assess these queries."
+}

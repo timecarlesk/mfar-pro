@@ -1,0 +1,29 @@
+{
+  "field_priority": {
+    "default": [
+      "contraindication",
+      "phenotype absent",
+      "expression absent",
+      "indication",
+      "expression present",
+      "phenotype present",
+      "associated with",
+      "parent-child",
+      "ppi",
+      "interacts with",
+      "target",
+      "side effect"
+    ]
+  },
+  "max_items_per_field": 5,
+  "max_chars": 1200,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nScore 0-10 where 0=completely irrelevant, 10=perfect match.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.7
+  },
+  "top_k": 50,
+  "round": 2,
+  "rationale": "Added explicit field_priority to ensure negation-relevant fields (contraindication, phenotype absent, expression absent) are shown first, followed by positive fields for contrast. Increased max_chars from 800 to 1200 to reduce truncation of important negation data. This should help the LLM better distinguish between documents that have the right type of negation evidence vs those with only positive evidence."
+}

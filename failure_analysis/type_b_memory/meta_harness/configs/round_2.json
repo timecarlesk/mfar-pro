@@ -1,0 +1,16 @@
+{
+  "field_priority": {
+    "default": []
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nFor negation queries, a document is relevant if it contains information that directly addresses the negative constraint (e.g., shows absence, contraindications, or lack of association as requested).\n\nScore 0-10 where 0=completely irrelevant, 5=partially relevant, 10=perfect match.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.7
+  },
+  "top_k": 50,
+  "round": 2,
+  "rationale": "Enhanced prompt clarity for negation scoring. Added explicit guidance that documents with contraindications/absence data are relevant for negation queries, and clarified the 0-10 scale with a midpoint anchor (5=partially relevant). This should help the LLM give more appropriate scores to gold documents that contain the requested negative information."
+}

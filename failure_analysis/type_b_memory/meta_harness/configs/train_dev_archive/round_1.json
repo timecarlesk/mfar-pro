@@ -1,0 +1,16 @@
+{
+  "field_priority": {
+    "default": []
+  },
+  "max_items_per_field": 5,
+  "max_chars": 800,
+  "show_suppressed_as": "[has data]",
+  "prompt_template": "Query: \"{query}\"\nDocument: {doc_text}\n\nThis query contains negation or constraints. Score how well this document satisfies the query INCLUDING any negation constraints (e.g., \"not indicated\" means the document should have contraindication data, not indication data).\n\nScore 0-10 where 0=completely irrelevant, 10=perfect match.\nOutput ONLY the number.",
+  "prompt_suffix": "",
+  "alpha_by_type": {
+    "default": 0.4
+  },
+  "top_k": 50,
+  "round": 1,
+  "rationale": "Reduced alpha from 0.7 to 0.4 to rely more on mFAR scores. Many failure cases show the LLM giving inappropriate scores (like 0.0 to relevant docs or 9.0 to wrong docs) while mFAR scores appear more consistent. The LLM struggles with negation understanding, so reducing its weight should help. This conservative change maintains current field prioritization and prompt while addressing the systematic LLM scoring issues seen across expression queries and contraindication queries."
+}

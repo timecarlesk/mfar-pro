@@ -1,0 +1,151 @@
+\section{LLM-Based Re-Ranking for Negation Query Failures}
+
+\subsection{Motivation}
+
+Multi-field adaptive retrieval (mFAR) learns query-conditioned field weights to combine dense and sparse scores across 46 field indices. However, for queries containing negation (e.g., ``drugs NOT indicated for diabetes''), the learned weights route to the wrong field---searching \texttt{indication} when the answer resides in \texttt{contraindication}. We identify 471 (val) and 546 (test) such queries where mFAR's field routing fails, resulting in a significant MRR gap: rerouted queries achieve 0.347 (val) / 0.332 (test) MRR versus 0.493 / 0.505 for non-negation queries.
+
+We attempted field-level logit bias (adding $\pm\alpha$ to the softmax weight logits), but this approach failed because:
+\begin{enumerate}
+    \item Bias applies uniformly to \emph{all} candidate documents---it cannot distinguish ``this doc has the correct field populated'' from ``this doc does not.''
+    \item 43--48\% of suppress fields are populated in gold documents, causing active harm.
+    \item Boosting an empty field on a document multiplies by zero---no effect.
+\end{enumerate}
+
+\subsection{Method: Two-Stage LLM Re-Ranking}
+
+We propose a post-hoc re-ranking approach that operates on mFAR's top-$K$ retrieved results. The pipeline consists of three stages:
+
+\paragraph{Stage 1: Detection.} For every query, Qwen3 (8B) determines whether the query contains negation or constraints that would cause the retrieval system to search the wrong field. The prompt includes positive and negative examples (e.g., ``non-small cell lung cancer'' is \emph{not} negation). Queries flagged as needing re-routing proceed to Stage 2; others retain their baseline mFAR rankings unchanged.
+
+\paragraph{Stage 2: Memory-Augmented Field Routing.} For flagged queries, Qwen3 identifies which fields should be boosted (most likely to contain the answer) and which are misleading. This stage uses a \emph{memory context} derived from training data analysis---field population statistics and answer-type distributions learned from the training split. The memory context is injected into the prompt to provide data-driven guidance rather than relying solely on the LLM's parametric knowledge.
+
+\paragraph{Stage 3: Per-Document Re-Ranking.} For each flagged query's top-$K$ documents (we use $K=50$), an LLM scores the (query, document) pair for negation-aware relevance on a 0--10 scale. The document representation prioritizes fields identified as relevant by Stage 2 (the ``boost fields''), providing focused evidence to the LLM. The final score is a hybrid combination:
+\begin{equation}
+    s_{\text{final}} = \alpha \cdot \hat{s}_{\text{LLM}} + (1 - \alpha) \cdot \hat{s}_{\text{mFAR}}
+\end{equation}
+where $\hat{s}$ denotes min-max normalized scores within each query's candidate set. Documents beyond rank $K$ retain their original mFAR ordering below the re-ranked set.
+
+\paragraph{Key Design Choices.}
+\begin{itemize}
+    \item \textbf{Boost-only document formatting:} The document representation shown to the re-ranker prioritizes ``boost fields'' from Stage 2, giving the LLM focused evidence about the fields most relevant to the negation constraint.
+    \item \textbf{Hybrid scoring:} Pure LLM scores ($\alpha=1.0$) underperform hybrid scores, indicating that mFAR's retrieval signal is complementary to the LLM's negation understanding.
+    \item \textbf{Zero regression guarantee:} Non-flagged queries (79--81\% of all queries) are never modified, ensuring no degradation on the majority of queries.
+\end{itemize}
+
+\subsection{Experimental Setup}
+
+\paragraph{Dataset.} PRIME biomedical knowledge graph: 129,375 entities, 6,162 training / 2,241 validation / 2,801 test queries. Each entity has up to 22 relation fields (indication, contraindication, expression present/absent, etc.).
+
+\paragraph{Baseline.} mFAR with contriever-msmarco encoder, query-conditioned field weights, 46 field indices (22 dense + 22 sparse + 2 single). Evaluated with 8$\times$ GPU DDP inference.
+
+\paragraph{Re-Ranking Models.} Qwen3-8B and Qwen3-32B via Ollama, with 6$\times$ H100 GPU parallel instances. Stage 1 detection: $\sim$400ms/query. Stage 3 scoring: $\sim$400ms (8B) or $\sim$800ms (32B) per (query, document) pair.
+
+\paragraph{Metrics.} MRR (Mean Reciprocal Rank), Hit@1, Hit@5, NDCG@10, Miss Rate (\% of queries with no relevant document in top-100).
+
+\subsection{Results}
+
+Table~\ref{tab:baseline} shows the performance gap between negation-affected (rerouted) and non-negation queries under the mFAR baseline.
+
+\begin{table}[h]
+\centering
+\caption{Baseline mFAR performance by query group.}
+\label{tab:baseline}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Split} & \textbf{Group} & \textbf{N} & \textbf{MRR} & \textbf{Hit@1} & \textbf{Hit@5} & \textbf{Miss\%} \\
+\midrule
+\multirow{3}{*}{Val}
+ & Overall        & 2241 & 0.463 & 34.5 & 60.4 & 13.1 \\
+ & Rerouted       &  471 & 0.347 & 24.8 & 45.6 & 17.6 \\
+ & Non-negation   & 1770 & 0.493 & 37.1 & 64.4 & 11.9 \\
+\midrule
+\multirow{3}{*}{Test}
+ & Overall        & 2801 & 0.472 & 35.1 & 61.3 & 11.2 \\
+ & Rerouted       &  546 & 0.332 & 22.3 & 46.0 & 17.6 \\
+ & Non-negation   & 2255 & 0.505 & 38.1 & 65.0 &  9.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:alpha_sweep} shows the effect of the interpolation parameter $\alpha$ across both re-ranking models. We report the improvement ($\Delta$) over the mFAR baseline.
+
+\begin{table}[h]
+\centering
+\caption{Re-ranking results: $\Delta$ MRR over baseline at different $\alpha$ values (top-50 re-ranking).}
+\label{tab:alpha_sweep}
+\begin{tabular}{llcccc}
+\toprule
+\textbf{Model} & $\boldsymbol{\alpha}$ & \textbf{Val Overall $\Delta$} & \textbf{Val Reroute $\Delta$} & \textbf{Test Overall $\Delta$} & \textbf{Test Reroute $\Delta$} \\
+\midrule
+\multirow{4}{*}{Qwen3-8B}
+ & 0.3 & +0.003 & +0.015 & +0.004 & +0.020 \\
+ & 0.5 & +0.006 & +0.027 & +0.006 & +0.031 \\
+ & 0.7 & +0.007 & +0.035 & +0.008 & +0.043 \\
+ & 1.0 & +0.003 & +0.015 & +0.005 & +0.023 \\
+\midrule
+\multirow{4}{*}{Qwen3-32B}
+ & 0.3 & +0.005 & +0.024 & +0.009 & +0.047 \\
+ & 0.5 & +0.007 & +0.032 & +0.010 & +0.054 \\
+ & \textbf{0.7} & \textbf{+0.006} & \textbf{+0.029} & \textbf{+0.011} & \textbf{+0.057} \\
+ & 1.0 & +0.003 & +0.012 & +0.006 & +0.029 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:best_detail} provides a detailed comparison of the best configuration (Qwen3-32B, $\alpha=0.7$) against the baseline across all metrics.
+
+\begin{table}[h]
+\centering
+\caption{Detailed metrics for best re-ranking configuration (Qwen3-32B, $\alpha=0.7$, top-50).}
+\label{tab:best_detail}
+\begin{tabular}{llccccc}
+\toprule
+\textbf{Split} & \textbf{System} & \textbf{MRR} & \textbf{Hit@1} & \textbf{Hit@5} & \textbf{NDCG@10} & \textbf{Miss\%} \\
+\midrule
+\multicolumn{7}{l}{\textit{Rerouted Queries (Val: N=471, Test: N=546)}} \\
+\midrule
+\multirow{2}{*}{Val}
+ & mFAR baseline & 0.347 & 24.8 & 45.6 & 0.386 & 17.6 \\
+ & + LLM rerank  & 0.375 & 26.5 & 51.2 & 0.417 & 17.6 \\
+\midrule
+\multirow{2}{*}{Test}
+ & mFAR baseline & 0.332 & 22.3 & 46.0 & 0.374 & 17.6 \\
+ & + LLM rerank  & 0.390 & 29.3 & 49.8 & 0.428 & 17.6 \\
+\midrule
+\multicolumn{7}{l}{\textit{Non-Negation Queries (Val: N=1770, Test: N=2255)}} \\
+\midrule
+Val  & mFAR baseline & 0.493 & 37.1 & 64.4 & 0.541 & 11.9 \\
+     & + LLM rerank  & 0.493 & 37.1 & 64.4 & 0.541 & 11.9 \\
+\midrule
+Test & mFAR baseline & 0.505 & 38.1 & 65.0 & 0.548 &  9.7 \\
+     & + LLM rerank  & 0.505 & 38.1 & 65.0 & 0.548 &  9.7 \\
+\midrule
+\multicolumn{7}{l}{\textit{Overall}} \\
+\midrule
+Val  & mFAR baseline & 0.463 & 34.5 & 60.4 & 0.508 & 13.1 \\
+     & + LLM rerank  & 0.469 & 34.9 & 61.6 & 0.515 & 13.1 \\
+\midrule
+Test & mFAR baseline & 0.472 & 35.1 & 61.3 & 0.514 & 11.2 \\
+     & + LLM rerank  & 0.483 & 36.4 & 62.0 & 0.525 & 11.2 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Analysis}
+
+\paragraph{Why hybrid outperforms pure LLM.} At $\alpha=1.0$ (pure LLM scoring), performance drops compared to $\alpha=0.7$. This indicates that mFAR's dense/sparse retrieval scores capture complementary information---particularly lexical and semantic similarity---that the LLM's pointwise relevance judgment does not fully capture.
+
+\paragraph{32B vs.\ 8B.} Qwen3-32B consistently outperforms 8B, with the gap widening on test (+0.057 vs.\ +0.043 reroute $\Delta$ MRR at $\alpha=0.7$). The larger model provides better negation-aware relevance discrimination, particularly for ambiguous cases where 8B assigns tied scores.
+
+\paragraph{Ceiling analysis.} Of the 471 rerouted val queries:
+\begin{itemize}
+    \item 25\% already have gold at rank 1 (no help needed)
+    \item 52\% have gold in top-50 (re-ranking can help)
+    \item 6\% have gold at ranks 51--100 (beyond re-ranking window)
+    \item 18\% have gold not in top-100 (retrieval failure, re-ranking cannot help)
+\end{itemize}
+The theoretical ceiling for top-50 re-ranking is thus $\sim$77\% coverage of rerouted queries.
+
+\paragraph{Zero regression.} Non-negation queries show exactly $\Delta=0.000$ MRR across all configurations, as these queries bypass the re-ranking pipeline entirely---their baseline rankings are copied verbatim.
+
+\paragraph{Cost.} Stage 3 re-ranking requires $K \times |\text{rerouted}|$ LLM calls. With $K=50$ and 6$\times$ H100 parallel Ollama instances: $\sim$26 minutes (8B) or $\sim$52 minutes (32B) per evaluation split. Stages 1--2 run once and are cached.

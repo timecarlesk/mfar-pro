@@ -1,0 +1,21 @@
+{
+  "split": "val",
+  "round": 1,
+  "baseline_round": 0,
+  "n_rerouted": 469,
+  "n_with_gold": 469,
+  "baseline_mrr": 0.3947,
+  "baseline_ci": [
+    0.358,
+    0.4327
+  ],
+  "round_mrr": 0.3678,
+  "round_ci": [
+    0.3323,
+    0.4051
+  ],
+  "delta": -0.0269,
+  "ci_width": 0.0747,
+  "threshold": 0.0374,
+  "accept": false
+}
