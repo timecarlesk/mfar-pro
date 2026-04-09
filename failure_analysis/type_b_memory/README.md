@@ -2,104 +2,192 @@
 
 ## Problem
 
-mFAR learns query-conditioned field weights via `score = sum(softmax(q @ W) * field_scores)`. For negation queries (~20% of all queries), these weights route to the **wrong field**. For example, "drugs NOT indicated for diabetes" causes mFAR to search the `indication` field when the answer is in `contraindication`.
+mFAR learns query-conditioned field weights via `score = sum(softmax(q @ W) * field_scores)`. For negation queries (~19% of test), these weights route to the **wrong field**. For example, "drugs NOT indicated for diabetes" causes mFAR to search the `indication` field when the answer is in `contraindication`.
 
-**Impact**: Rerouted queries have 0.332-0.347 MRR vs 0.493-0.505 for non-negation queries.
+**Impact**: Rerouted queries have 0.340 MRR vs 0.504 for non-negation queries on test.
+
+## Pipeline Overview
+
+```
+                  ┌─────────────────────────────────────────────┐
+  OFFLINE         │  Training Set (6,162 queries)               │
+  (once)          │    ↓ Stage 1+2 (detect + classify)          │
+                  │    ↓ extract rerouted + gold docs            │
+                  │    ↓ group by (gold_entity_type, neg_pattern)│
+                  │    ↓ count field population in gold docs     │
+                  │    ↓                                         │
+                  │  Memory v1 (text) / Memory KG (graph)       │
+                  └─────────────────────────────────────────────┘
+                                     │
+                  ┌──────────────────▼──────────────────────────┐
+  FEEDBACK        │  Memory v1 → rerank val → verify top-1     │
+  (optional)      │    ↓ per-group pass rate                    │
+                  │    ↓ rate < 70% → add WARNING tag           │
+                  │  Memory v2 (text + confidence annotations)  │
+                  └─────────────────────────────────────────────┘
+                                     │
+                  ┌──────────────────▼──────────────────────────┐
+  ONLINE          │  Stage 1: Detect — needs rerouting? (yes/no)│
+  (per query)     │    ~81% "no" → copy baseline, skip all      │
+                  │  Stage 1.5: Classify — negation_pattern +   │
+                  │    answer_type                               │
+                  │  Stage 2: Route — match memory rule →       │
+                  │    output boost_fields (JSON)                │
+                  │  Stage 3: Rerank — score top-50 docs 0-10   │
+                  │    doc shows ALL fields, boost tagged        │
+                  │    [RELEVANT]; final = α·LLM + (1-α)·mFAR   │
+                  └─────────────────────────────────────────────┘
+```
+
+## Memory Versions
+
+All memory is generated from training data statistics (model-independent). All models share the same memory files.
+
+| Version | File | Description |
+|---------|------|-------------|
+| **v1** | `memory_context_train.txt` | Per-group boost_fields from gold doc field population frequencies |
+| **v2** | `memory_context_train_v2.txt` | v1 + `WARNING` tags on rules with <70% self-verification pass rate |
+| **KG** | `memory_kg.json` | v1 structured as a graph: PatternNode → BOOSTS → FieldNode edges |
+
+**v1 example:**
+```
+When answer_type=disease and query contains "not indicated" (109 training examples):
+  Recommended boost_fields: ['contraindication', 'parent-child', 'associated with', ...]
+  Gold doc field distribution: contraindication (19%), parent-child (18%), ...
+```
+
+**v2 example (same rule + feedback):**
+```
+When answer_type=disease and query contains "not indicated" (109 training examples):
+  Recommended boost_fields: ['contraindication', 'parent-child', 'associated with', ...]
+  WARNING: Low verification confidence: 0% (0/48). This rule may be unreliable.
+  Consider reasoning from entity type field inventory instead.
+```
+
+**How memory is used**: Stage 2 LLM sees the matched rule → outputs `boost_fields` → Stage 3 tags those fields with `[RELEVANT]` in the document. The no-memory ablation shows the same document content without `[RELEVANT]` tags.
+
+## Document Formatting ([RELEVANT] Tag)
+
+Stage 3 shows **all** field content to the LLM. Memory-recommended fields are tagged `[RELEVANT]`:
+
+```
+Peptic Ulcer (disease);
+[RELEVANT] contraindication: Aspirin, Ibuprofen;
+indication: Metformin, Omeprazole;
+associated with: H. pylori, stress;
+phenotype present: abdominal pain, bleeding
+```
+
+No-memory ablation: same content, no `[RELEVANT]` tags. This isolates the memory contribution.
+
+## Results (Best: Qwen3-32B, Memory v1, alpha=0.7)
+
+| Group | N | MRR | Delta | Rel. % |
+|-------|---|-----|-------|--------|
+| Rerouted | 548 | 0.340 → 0.419 | +0.079 | +23.3% |
+| Non-negation | 2253 | 0.504 → 0.504 | 0.000 | 0.0% |
+| Overall | 2801 | 0.472 → 0.487 | +0.016 | +3.3% |
 
 ## Two Approaches Attempted
 
-### 1. Logit Bias (`logit_bias/`) — Failed
+### 1. Logit Bias (`logit_bias/`) -- Failed
 
-Added `±α` bias to the softmax weight logits to boost/suppress specific fields.
+Added bias to softmax weight logits to boost/suppress specific fields.
 
-**Why it failed**:
-- Bias applies uniformly to ALL candidate documents — can't distinguish "this doc has the right field" from "this doc doesn't"
-- 43-48% of suppressed fields are populated in gold docs → actively harms ranking
-- Boosting an empty field on a doc = multiplying by zero → no effect
+**Why it failed**: Bias is per-query not per-document. 43-48% of suppressed fields are populated in gold docs.
 
-### 2. LLM Re-Ranking (`rerank/`) — Works (+0.057 MRR)
+### 2. LLM Re-Ranking (`rerank/`) -- Works
 
-Post-hoc re-ranking of mFAR's top-50 results using Qwen3 for negation-aware relevance scoring. Only applied to flagged negation queries; non-negation queries keep baseline rankings unchanged (zero regression).
+Post-hoc re-ranking of mFAR's top-50 using LLM for negation-aware scoring. Non-negation queries keep baseline rankings unchanged (zero regression).
 
-**Three-stage pipeline**:
-
-```
-Stage 1 (Detect):  Qwen3 yes/no — does this query need field re-routing?
-                   Runs on ALL queries. ~95% get "no" and are skipped.
-
-Stage 2 (Route):   Qwen3 identifies boost_fields — which fields should the
-                   reranker focus on? Uses memory context from training data.
-
-Stage 3 (Rerank):  For each (query, top-50 doc) pair, Qwen3 scores 0-10
-                   for negation-aware relevance. Doc formatting prioritizes
-                   boost_fields from Stage 2. Final score = hybrid of
-                   LLM score and mFAR score.
-```
-
-**Memory context**: Stage 2's prompt is augmented with training data statistics — for each (answer_type, negation_pattern) combination observed in training, the memory records which fields are actually populated in gold docs. This gives the LLM data-driven guidance instead of relying on parametric knowledge alone.
-
-## Results
-
-| Model | α | Val Reroute ΔMRR | Test Reroute ΔMRR | Test Overall ΔMRR | Non-neg Δ |
-|-------|---|-----------------|------------------|-------------------|-----------|
-| Qwen3-8B | 0.7 | +0.035 | +0.043 | +0.008 | 0.000 |
-| **Qwen3-32B** | **0.7** | **+0.029** | **+0.057** | **+0.011** | **0.000** |
-
-Best config: Qwen3-32B, α=0.7 (70% LLM + 30% mFAR), top-50 re-ranking.
-
-## Directory Structure
+## Code Structure
 
 ```
 type_b_memory/
-├── rerank/                              # Rerank approach (works)
-│   ├── shared/
-│   │   └── qwen3_client.py             #   Ollama API, prompts, parsing
-│   ├── train_memory/                    #   Step 1: Generate memory from train
-│   │   ├── run_stage1_stage2.py         #     Stage 1+2 on train (default prompt)
-│   │   ├── extract_rerouted.py          #     Extract rerouted queries + gold docs
-│   │   └── build_memory_context.py      #     Field confusion → memory_context.txt
-│   ├── detect_route/                    #   Step 2: Detect + route val/test
-│   │   └── run_stage1_stage2.py         #     Stage 1+2 with memory context
-│   ├── scoring/                         #   Step 3: LLM scoring + merge
-│   │   ├── rerank.py                    #     score / merge / pilot commands
-│   │   └── evaluate.py                  #     MRR/Hit@k comparison
-│   └── analysis/                        #   Step 4: Validation
-│       └── validate_boost_precision.py  #     Boost precision/recall vs gold docs
+├── rerank/                                 # Main pipeline
+│   ├── shared/                             #   Shared utilities
+│   │   ├── qwen3_client.py                 #     Ollama API, Stage 1+2 prompts, cache I/O
+│   │   └── memory_kg.py                    #     MemoryKG class (nodes, edges, query, format)
+│   │
+│   ├── train_memory/                       #   Step 1-2: Build memory from training data
+│   │   ├── run_stage1_stage2.py            #     Stage 1+2 on train split (no memory)
+│   │   ├── extract_rerouted.py             #     Extract rerouted queries + gold doc IDs
+│   │   ├── build_memory_context.py         #     Field confusion → memory_context_train.txt (v1)
+│   │   ├── build_memory_kg.py              #     v1 → memory_kg.json (KG version)
+│   │   └── finetune_W.py                   #     (Experimental) Fine-tune W matrix with memory
+│   │
+│   ├── detect_route/                       #   Step 3: Detect + route on val/test
+│   │   └── run_stage1_stage2.py            #     Stage 1+2 with memory context
+│   │
+│   ├── scoring/                            #   Step 4-6: Score, merge, evaluate
+│   │   ├── rerank.py                       #     score / merge / pilot commands
+│   │   ├── evaluate.py                     #     MRR/Hit@k/NDCG grouped evaluation
+│   │   └── verify.py                       #     Self-verification → memory v2 (WARNING tags)
+│   │
+│   ├── analysis/                           #   Validation utilities
+│   │   └── validate_boost_precision.py     #     Boost precision/recall vs gold docs
+│   │
+│   ├── run_full_pipeline.sh                #   End-to-end script (gemma4:31b)
+│   └── run_full_pipeline_qwen35_27b.sh     #   End-to-end script (qwen3.5:27b)
 │
-├── logit_bias/                          # Logit bias approach (failed)
-│   ├── negation_memory_module.py        #   Bias injection into LinearWeights
-│   ├── eval.sh                          #   Evaluation script
-│   └── dump_logit_range.py              #   W matrix analysis
+├── logit_bias/                             # Failed approach
+│   ├── negation_memory_module.py           #   Bias injection into LinearWeights
+│   ├── eval.sh                             #   Evaluation script
+│   └── dump_logit_range.py                 #   W matrix analysis
 │
-└── rerank_results_standalone.tex/pdf    # Results writeup
+├── meta_harness/                           # (Legacy) Meta-learning harness experiments
+│
+├── rerank_results_standalone.tex           # Paper writeup
+└── rerank_results.tex                      # Alternate writeup
 ```
 
 ## Output Structure
 
 ```
 output/failure_analysis/type_b_memory/
+├── analysis/                               # Memory files (shared across models)
+│   ├── memory_context_train.txt            #   Memory v1
+│   ├── memory_context_train_v2.txt         #   Memory v2 (v1 + WARNING tags)
+│   ├── memory_kg.json                      #   Memory KG
+│   ├── rerouted_train.json                 #   Rerouted training queries
+│   ├── field_confusion_train.json          #   Per-group field population stats
+│   └── verification_rates.json             #   Self-verification pass rates
+│
 ├── cache/
-│   ├── qwen3_8b/                        # Stage 1+2 detection cache
-│   │   ├── qwen3_cache_train.jsonl
-│   │   ├── qwen3_cache_val.jsonl
-│   │   └── qwen3_cache_test.jsonl
-│   └── rerank/                          # Rerank scores by model
-│       ├── qwen3_8b/
-│       │   ├── rerank_cache_val.jsonl
-│       │   └── rerank_cache_test.jsonl
-│       └── qwen3_32b/
-│           ├── rerank_cache_val.jsonl
-│           └── rerank_cache_test.jsonl
-├── analysis/
-│   ├── memory_context_train.txt         # Memory context (injected into Stage 2)
-│   ├── rerouted_train.json              # Rerouted training queries
-│   └── field_confusion_train.json       # Per-group field population stats
-└── runs/
-    ├── rerank/
-    │   ├── qwen3_8b/alpha_0.7_top50/    # Results per model + alpha
-    │   └── qwen3_32b/alpha_0.7_top50/
-    └── logit_bias/                      # Old logit bias results
+│   ├── stage12/{model_tag}/                # Stage 1+2 detection/routing cache
+│   │   ├── shared/                         #   Train split (no memory, shared)
+│   │   │   └── qwen3_cache_train.jsonl
+│   │   ├── memory_v1/                      #   Val/test with memory v1
+│   │   │   ├── qwen3_cache_val.jsonl
+│   │   │   └── qwen3_cache_test.jsonl
+│   │   ├── memory_v2/                      #   Val/test with memory v2
+│   │   └── memory_kg/                      #   Val/test with memory KG
+│   │
+│   ├── rerank/{model_tag}/                 # Stage 3 rerank score cache
+│   │   ├── memory_v1/
+│   │   │   └── rerank_cache_{split}.jsonl
+│   │   ├── memory_v1_no_memory/            #   No-memory ablation
+│   │   ├── memory_v2/
+│   │   └── memory_kg/
+│   │
+│   └── verify/{model_tag}/                 # Self-verification cache
+│       └── verify_cache_{split}.jsonl
+│
+├── runs/
+│   └── rerank/{model_tag}/                 # Merged results (.qres) + evaluation
+│       ├── memory_v1/
+│       │   └── alpha_0.7_top50/
+│       │       ├── final-all-0.qres
+│       │       ├── final-additional-all-0.qres
+│       │       └── memory_evaluation.json
+│       ├── memory_v1_no_memory/
+│       ├── memory_v2/
+│       └── memory_kg/
+│
+└── backups/                                # Timestamped backups of previous runs
 ```
+
+**Model tags**: `qwen3_8b`, `qwen3_32b`, `qwen3.5_27b`, `gemma4_e4b`, `gemma4_31b`
 
 ## How to Run
 
@@ -109,67 +197,65 @@ output/failure_analysis/type_b_memory/
 PY=/scratch/mcity_project_root/mcity_project/xxxchen/.conda/envs/mfar/bin/python
 cd /scratch/mcity_project_root/mcity_project/xxxchen/CSE_585/multifield-adaptive-retrieval
 
-# Start 6 Ollama instances (one per GPU)
-for i in 0 1 2 3 4 5; do
+# Start 8 Ollama instances (8x H100)
+for i in 0 1 2 3 4 5 6 7; do
   CUDA_VISIBLE_DEVICES=$i OLLAMA_HOST=127.0.0.1:$((11434+i)) ollama serve &
+  sleep 2
 done
-sleep 10
-EP=http://127.0.0.1:11434,http://127.0.0.1:11435,http://127.0.0.1:11436,http://127.0.0.1:11437,http://127.0.0.1:11438,http://127.0.0.1:11439
+sleep 15
+EP=http://127.0.0.1:11434,http://127.0.0.1:11435,http://127.0.0.1:11436,http://127.0.0.1:11437,http://127.0.0.1:11438,http://127.0.0.1:11439,http://127.0.0.1:11440,http://127.0.0.1:11441
 ```
 
-### Step 1: Generate Memory from Training Data
+### Full Pipeline (6 Steps)
+
+See `run_full_pipeline.sh` for the complete script. Summary:
 
 ```bash
-# Stage 1+2 on train (uses default prompt, no memory context yet)
-$PY failure_analysis/type_b_memory/rerank/train_memory/run_stage1_stage2.py \
-    --splits train --endpoints $EP
+MODEL=qwen3:8b  # or qwen3:32b, gemma4:e4b, qwen3.5:27b, etc.
 
-# Extract rerouted queries
-$PY failure_analysis/type_b_memory/rerank/train_memory/extract_rerouted.py \
-    --splits train
+# Step 1: Stage 1+2 on train (no memory) → extract rerouted → build memory v1
+$PY .../train_memory/run_stage1_stage2.py --splits train --model $MODEL --endpoints $EP
+$PY .../train_memory/extract_rerouted.py --splits train --detect_model $MODEL
+$PY .../train_memory/build_memory_context.py --splits train
 
-# Build field confusion → memory_context_train.txt
-$PY failure_analysis/type_b_memory/rerank/train_memory/build_memory_context.py \
-    --splits train
-```
+# Step 2: Build memory KG
+$PY .../train_memory/build_memory_kg.py build
 
-### Step 2: Detect + Route Val/Test (with Memory)
+# Step 3: Stage 1+2 on val/test with memory v1
+$PY .../detect_route/run_stage1_stage2.py --splits val test --model $MODEL --endpoints $EP --memory_version memory_v1
 
-```bash
-$PY failure_analysis/type_b_memory/rerank/detect_route/run_stage1_stage2.py \
-    --splits val test --endpoints $EP
-```
+# Step 4: Rerank v1 on val → verify → build memory v2
+$PY .../scoring/rerank.py score --splits val --model $MODEL --endpoints $EP --memory_version memory_v1
+$PY .../scoring/rerank.py merge --splits val --model $MODEL --alpha 0.7 --memory_version memory_v1
+$PY .../scoring/verify.py verify --splits val --model $MODEL --endpoints $EP --memory_version memory_v1
+$PY .../scoring/verify.py update-memory --splits val --model $MODEL --memory_version memory_v1
 
-### Step 3: Rerank
+# Step 5: Stage 1+2 on val/test with memory v2 + KG
+$PY .../detect_route/run_stage1_stage2.py --splits val test --model $MODEL --endpoints $EP --memory_version memory_v2
+$PY .../detect_route/run_stage1_stage2.py --splits val test --model $MODEL --endpoints $EP --memory_version memory_kg
 
-```bash
-# Pilot (50 queries, sanity check)
-$PY failure_analysis/type_b_memory/rerank/scoring/rerank.py pilot \
-    --splits val --model qwen3:8b --endpoint http://127.0.0.1:11434
-
-# Full scoring
-$PY failure_analysis/type_b_memory/rerank/scoring/rerank.py score \
-    --splits val test --model qwen3:8b --endpoints $EP
-
-# Merge + evaluate (instant, sweep alpha)
-$PY failure_analysis/type_b_memory/rerank/scoring/rerank.py merge \
-    --splits val test --model qwen3:8b --alpha_sweep 0.3 0.5 0.7 1.0
-```
-
-### Step 4: Validate
-
-```bash
-$PY failure_analysis/type_b_memory/rerank/analysis/validate_boost_precision.py
+# Step 6: Score + merge + evaluate all conditions
+for MV in memory_v1 memory_v2 memory_kg; do
+  $PY .../scoring/rerank.py score --splits test --model $MODEL --endpoints $EP --memory_version $MV
+  $PY .../scoring/rerank.py merge --splits val test --model $MODEL --alpha_sweep 0.3 0.5 0.7 1.0 --memory_version $MV
+done
+# No-memory ablation
+$PY .../scoring/rerank.py score --splits test --model $MODEL --endpoints $EP --memory_version memory_v1 --no_memory
+$PY .../scoring/rerank.py merge --splits val test --model $MODEL --alpha_sweep 0.3 0.5 0.7 1.0 --memory_version memory_v1 --no_memory
 ```
 
 ## Key Design Decisions
 
-1. **Regex → Qwen3 for detection**: Initially used regex for Stage 1, switched to Qwen3 for higher recall (catches negation patterns regex misses like "preclude the use of", "renders unsuitable").
+1. **[RELEVANT] tag, not field hiding**: All fields shown with content. Boost fields tagged `[RELEVANT]` for attention guidance. Previously tried `[has data]` hiding which hurt small models.
 
-2. **Boost-only doc formatting**: Stage 3's document representation shows boost_fields with actual content, other fields as `[has data]`. This focuses the LLM on the fields that matter for the negation constraint.
+2. **Memory from gold doc statistics**: Memory rules come from counting which fields are populated in gold docs per (answer_type, negation_pattern) group. This is objective data, not LLM-generated.
 
-3. **Hybrid scoring**: `final = α × LLM + (1-α) × mFAR`. Pure LLM (α=1.0) underperforms hybrid (α=0.7), showing mFAR's retrieval signal is complementary.
+3. **`_has_effective_reroute()` filter**: Queries with `needs_reroute=True` but empty `boost_fields` (Stage 2 produced nothing) are excluded from scoring/merging. They keep baseline rankings.
 
-4. **Zero regression guarantee**: Non-flagged queries (~80%) bypass re-ranking entirely — their baseline rankings are copied verbatim.
+4. **Hybrid scoring**: `final = alpha * LLM + (1-alpha) * mFAR`. Pure LLM (alpha=1.0) underperforms alpha=0.7, showing mFAR's retrieval signal is complementary.
 
-5. **Memory context from training data**: Stage 2's prompt is augmented with (answer_type, negation_pattern) → recommended boost_fields mappings learned from training set field confusion analysis. This is direct pattern matching guidance, not abstract statistics that the LLM would need to interpret.
+5. **Zero regression**: Non-flagged queries (~81%) bypass re-ranking entirely. Their baseline rankings are copied verbatim.
+
+6. **Model-specific cache paths**: Each model gets its own subfolder under `cache/stage12/{model_tag}/` and `cache/rerank/{model_tag}/` to prevent cache pollution across models.
+
+7. **DOC_FORMAT_VERSION**: Cache entries tagged with format version to prevent mixing old/new document formatting across runs.
