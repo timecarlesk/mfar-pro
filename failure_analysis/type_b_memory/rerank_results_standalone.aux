@@ -2,32 +2,38 @@
 \@writefile{toc}{\contentsline {section}{\numberline {1}Motivation}{1}}
 \@writefile{toc}{\contentsline {section}{\numberline {2}Method}{1}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Memory Generation from Training Data}{1}}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Overview of the memory-guided LLM re-ranking pipeline. \textbf  {(a) Offline:} Memory is constructed from training data by detecting negation queries, classifying their patterns, and grouping by gold entity type to produce field boost recommendations (Memory v1). \textbf  {(b) Feedback loop:} Self-verification on validation data checks whether reranked top-1 results satisfy negation constraints without gold answers, producing per-group confidence annotations (Memory v2). \textbf  {(c) Online inference:} Test queries are detected, classified, and routed using Memory v2; the matched rule guides document formatting for per-document LLM re-ranking, with hybrid scoring ($\alpha =0.7$) combining LLM and mFAR signals.}}{2}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Overview of the memory-guided LLM re-ranking pipeline. \textbf  {(a) Offline:} Memory is constructed from training data by detecting negation queries, classifying their patterns, and grouping by gold entity type to produce field boost recommendations. \textbf  {(b) Feedback loop:} Self-verification on validation data produces per-group confidence annotations (Memory v2). \textbf  {(c) Online inference:} The matched rule's \texttt  {[RELEVANT]} tag guides the LLM re-ranker's attention while showing all field content.}}{2}}
 \newlabel{fig:pipeline}{{1}{2}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Stage 1: Detection}{2}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Stage 1.5: Negation Pattern Classification}{3}}
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Stage 2: Memory-Augmented Field Routing}{3}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Stage 3: Per-Document Re-Ranking}{4}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.6}Self-Verification Feedback Loop (Memory v2)}{4}}
-\@writefile{toc}{\contentsline {section}{\numberline {3}Experimental Setup}{5}}
-\@writefile{toc}{\contentsline {paragraph}{Dataset.}{5}}
-\@writefile{toc}{\contentsline {paragraph}{Baseline.}{5}}
-\@writefile{toc}{\contentsline {paragraph}{Re-Ranking Models.}{5}}
-\@writefile{toc}{\contentsline {paragraph}{Metrics.}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}Stage 3: Per-Document Re-Ranking with [RELEVANT] Tags}{3}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.6}Self-Verification Feedback (Memory v2)}{4}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Experimental Setup}{4}}
+\@writefile{toc}{\contentsline {paragraph}{Dataset.}{4}}
+\@writefile{toc}{\contentsline {paragraph}{Baseline.}{4}}
+\@writefile{toc}{\contentsline {paragraph}{Re-Ranking Models.}{4}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces mFAR baseline performance on test by query group. ``Rerouted'' is defined by Qwen3-32B Stage\nobreakspace  {}1+2 flagging with Memory v1 and accounts for $\sim $15\% of the test set.}}{5}}
+\newlabel{tab:baseline}{{1}{5}}
 \@writefile{toc}{\contentsline {section}{\numberline {4}Results}{5}}
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Baseline mFAR performance by query group (8$\times $H100 inference).}}{6}}
-\newlabel{tab:baseline}{{1}{6}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}Main Results}{5}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Re-ranking results on the rerouted (negation) subset at each model's best $\alpha $. Each model runs end-to-end (same model for Stage\nobreakspace  {}1+2 detection \emph  {and} Stage\nobreakspace  {}3 scoring). Non-negation $\Delta =0$ in all cases.}}{5}}
+\newlabel{tab:main}{{2}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}Best Configuration Detail}{5}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}Interpolation Weight Sweep}{5}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Detailed test metrics for Qwen3-32B, Memory v2, $\alpha =0.7$, top-50 re-ranking. Only the rerouted subset is re-ranked; all other queries copy the baseline verbatim ($\Delta = 0$).}}{6}}
+\newlabel{tab:best}{{3}{6}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Rerouted-query MRR across $\alpha $ on test. \relax $\@@underline {\hbox {Underline}}\mathsurround \z@ $\relax  = per-row maximum; \textbf  {bold} = overall best cell per model.}}{6}}
+\newlabel{tab:sweep}{{4}{6}}
 \@writefile{toc}{\contentsline {section}{\numberline {5}Analysis}{6}}
-\@writefile{toc}{\contentsline {paragraph}{Self-verification feedback improves both models.}{6}}
-\@writefile{toc}{\contentsline {paragraph}{KG-structured memory benefits smaller models.}{6}}
-\@writefile{toc}{\contentsline {paragraph}{Hybrid scoring outperforms pure LLM.}{6}}
-\@writefile{toc}{\contentsline {paragraph}{32B vs.\ 8B.}{6}}
-\@writefile{toc}{\contentsline {paragraph}{Ceiling analysis.}{6}}
-\@writefile{toc}{\contentsline {paragraph}{Zero regression.}{6}}
-\@writefile{toc}{\contentsline {paragraph}{Cost.}{6}}
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Test set $\Delta $ MRR over baseline (top-50 re-ranking, 8$\times $H100 baseline).}}{7}}
-\newlabel{tab:full_results}{{2}{7}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Detailed metrics: best configuration (Qwen3-32B, memory v2, $\alpha =0.7$, top-50).}}{8}}
-\newlabel{tab:best_detail}{{3}{8}}
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Effect of self-verification feedback (memory v2 vs v1) at $\alpha =0.7$ on test.}}{8}}
-\newlabel{tab:v1v2}{{4}{8}}
+\@writefile{toc}{\contentsline {paragraph}{Memory as capability amplifier---or distractor.}{6}}
+\@writefile{toc}{\contentsline {paragraph}{Self-verification feedback is the primary source of 32B memory gain.}{6}}
+\@writefile{toc}{\contentsline {paragraph}{Static memory rules overfit to the training distribution.}{6}}
+\@writefile{toc}{\contentsline {paragraph}{Memory gain concentrates in drug-class groups (32B).}{6}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces Rerouted-query MRR across $\alpha \in [0.3, 1.0]$ on validation (left) and test (right). Dashed line is the mFAR baseline. All three configurations peak near $\alpha \approx 0.7$ on test and $\alpha \approx 0.5$ on val; Memory v2 (red) is the upper envelope across the full range.}}{7}}
+\newlabel{fig:alpha_sweep}{{2}{7}}
+\@writefile{toc}{\contentsline {paragraph}{Optimal $\alpha $ reflects model reliability.}{7}}
+\@writefile{toc}{\contentsline {paragraph}{Zero regression.}{7}}
+\@writefile{toc}{\contentsline {paragraph}{Cost.}{7}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Per-group $\Delta $MRR over mFAR baseline on test (32B, $\alpha =0.7$), groups with $N\geq 5$ shown. Memory v2 (red) dominates drug-class groups; no-memory (gray) dominates the two largest anatomy/disease groups.}}{8}}
+\newlabel{fig:per_group}{{3}{8}}

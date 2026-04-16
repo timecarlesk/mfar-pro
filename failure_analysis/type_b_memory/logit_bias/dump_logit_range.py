@@ -29,7 +29,7 @@ ANALYSIS_DIR = "output/failure_analysis/type_b_memory/analysis"
 
 def main():
     parser = argparse.ArgumentParser(description="Dump q @ W logit range")
-    parser.add_argument("--checkpoint_dir", default="output/prime",
+    parser.add_argument("--checkpoint_dir", default="output/contriever/prime",
                         help="Checkpoint directory (default: output/prime)")
     parser.add_argument("--n_queries", type=int, default=100,
                         help="Number of queries to sample (default: 100)")

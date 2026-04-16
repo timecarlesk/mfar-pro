@@ -371,7 +371,7 @@ def main():
                  type_b_misses, imp_miss, improvements, weight_report)
 
 
-CKPT_DIR = "output/prime"
+CKPT_DIR = "output/contriever/prime"
 
 
 def section4_weight_analysis(all_type_b):

@@ -32,7 +32,7 @@ from multi_hop_analysis import (
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DATA_DIR = "data/prime"
-EVAL_DIR = "output/prime_eval"
+EVAL_DIR = "output/contriever/prime_eval"
 OUT_DIR = "output/failure_analysis/node_type_error"
 SPLIT_QRES = {
     "val": f"{EVAL_DIR}/final-all-0.qres",

@@ -6,8 +6,8 @@ broken down by negation type (A/B/C) and field pair subtype.
 
 Run from project root:
   python failure_analysis/type_b_memory/evaluate_memory.py \
-    --baseline_dir output/prime_eval \
-    --memory_dir output/prime_eval_negmem \
+    --baseline_dir output/contriever/prime_eval \
+    --memory_dir output/contriever/prime_eval_negmem \
     --cache_dir output/failure_analysis/type_b_memory
 """
 
@@ -160,9 +160,9 @@ def classify_queries(qids, qwen3_cache):
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate negation memory impact")
-    parser.add_argument("--baseline_dir", default="output/prime_eval",
+    parser.add_argument("--baseline_dir", default="output/contriever/prime_eval",
                         help="Directory with baseline .qres files")
-    parser.add_argument("--memory_dir", default="output/prime_eval_negmem",
+    parser.add_argument("--memory_dir", default="output/contriever/prime_eval_negmem",
                         help="Directory with memory-augmented .qres files")
     parser.add_argument("--splits", nargs="+", default=["val", "test"])
     parser.add_argument("--memory_version", default=None,

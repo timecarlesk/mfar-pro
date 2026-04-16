@@ -46,6 +46,24 @@ for f in VALID_FIELDS:
     _FIELD_ALIAS[f.replace(" ", "_")] = f
     _FIELD_ALIAS[f.replace("-", "_")] = f
 
+_EXTRA_FIELD_ALIASES = {
+    "contraindications": "contraindication",
+    "indications": "indication",
+    "side effects": "side effect",
+    "adverse effect": "side effect",
+    "adverse effects": "side effect",
+    "association": "associated with",
+    "associations": "associated with",
+    "interaction": "interacts with",
+    "interactions": "interacts with",
+    "off label use": "off-label use",
+}
+for alias, target in _EXTRA_FIELD_ALIASES.items():
+    _FIELD_ALIAS[alias] = target
+    _FIELD_ALIAS[alias.replace(" ", "_")] = target
+for alias, target in list(_FIELD_ALIAS.items()):
+    _FIELD_ALIAS[alias.lower()] = target
+
 # ── Stage 1 Prompt: Detection (short, yes/no) ───────────────────────────────
 
 DETECT_PROMPT = """\
@@ -138,36 +156,69 @@ def load_memory_kg():
     return None
 
 
-def load_memory_context():
-    """Load training-data-derived memory context, or fall back to default.
+def _load_text_memory_context(path, label):
+    """Load a text memory file and log its source."""
+    with open(path) as f:
+        ctx = f.read().strip()
+    print(f"  Loaded memory context {label} from {path} ({len(ctx)} chars)")
+    return ctx
 
-    Prefers KG → v2 text → v1 text → default.
+
+def load_memory_context(memory_version=None):
+    """Load the selected memory context.
+
+    Returns (memory_context, memory_kg). When memory_version is None, keep the
+    historical auto fallback order: KG → v2 text → v1 text → default.
     """
-    # Try KG first (structured, best)
+    v2_path = os.path.join(ANALYSIS_DIR, "memory_context_train_v2.txt")
+    v1_path = os.path.join(ANALYSIS_DIR, "memory_context_train.txt")
+
+    if memory_version == "memory_kg":
+        kg = load_memory_kg()
+        if kg is None:
+            raise FileNotFoundError(
+                f"Requested --memory_version=memory_kg but no KG exists at "
+                f"{os.path.join(ANALYSIS_DIR, 'memory_kg.json')}"
+            )
+        ctx = kg.format_full_context()
+        print(f"  Using Memory KG as context ({len(ctx)} chars)")
+        return ctx, kg
+
+    if memory_version == "memory_v2":
+        if not os.path.exists(v2_path):
+            raise FileNotFoundError(
+                f"Requested --memory_version=memory_v2 but file is missing: {v2_path}"
+            )
+        return _load_text_memory_context(v2_path, "v2"), None
+
+    if memory_version == "memory_v1":
+        if not os.path.exists(v1_path):
+            raise FileNotFoundError(
+                f"Requested --memory_version=memory_v1 but file is missing: {v1_path}"
+            )
+        return _load_text_memory_context(v1_path, "v1"), None
+
+    if memory_version is not None:
+        raise ValueError(
+            f"Unknown memory_version={memory_version!r}; expected one of "
+            "'memory_v1', 'memory_v2', 'memory_kg', or omitted for auto selection."
+        )
+
+    # Historical auto-selection for legacy callers.
     kg = load_memory_kg()
     if kg is not None:
         ctx = kg.format_full_context()
         print(f"  Using Memory KG as context ({len(ctx)} chars)")
-        return ctx
+        return ctx, kg
 
-    # Try v2 text (with verification confidence)
-    v2_path = os.path.join(ANALYSIS_DIR, "memory_context_train_v2.txt")
     if os.path.exists(v2_path):
-        with open(v2_path) as f:
-            ctx = f.read().strip()
-        print(f"  Loaded memory context v2 from {v2_path} ({len(ctx)} chars)")
-        return ctx
+        return _load_text_memory_context(v2_path, "v2"), None
 
-    # Fall back to v1
-    v1_path = os.path.join(ANALYSIS_DIR, "memory_context_train.txt")
     if os.path.exists(v1_path):
-        with open(v1_path) as f:
-            ctx = f.read().strip()
-        print(f"  Loaded memory context v1 from {v1_path} ({len(ctx)} chars)")
-        return ctx
+        return _load_text_memory_context(v1_path, "v1"), None
 
     print(f"  No memory context found, using default")
-    return _DEFAULT_MEMORY_CONTEXT
+    return _DEFAULT_MEMORY_CONTEXT, None
 
 
 def _find_matching_rule(memory_context, answer_type, negation_pattern):
@@ -202,19 +253,18 @@ def _find_matching_rule(memory_context, answer_type, negation_pattern):
     return best_match
 
 
-def build_route_prompt(query, memory_context, answer_type=None, negation_pattern=None, prompt_format="natural"):
+def build_route_prompt(query, memory_context, answer_type=None, negation_pattern=None,
+                       prompt_format="natural", memory_kg=None):
     """Build Stage 2 prompt with matched rule from memory context.
 
     prompt_format: "natural" = verbose NL description, "structured" = compact KV format
-    Uses KG query if available, falls back to text matching.
+    Uses KG query only when the selected memory source is KG.
     """
-    # Try KG-based query first
-    kg = load_memory_kg()
-    if kg is not None and answer_type and negation_pattern:
+    if memory_kg is not None and answer_type and negation_pattern:
         if prompt_format == "structured":
-            matched_rule = kg.format_structured_for_prompt(answer_type, negation_pattern)
+            matched_rule = memory_kg.format_structured_for_prompt(answer_type, negation_pattern)
         else:
-            matched_rule = kg.format_for_prompt(answer_type, negation_pattern)
+            matched_rule = memory_kg.format_for_prompt(answer_type, negation_pattern)
     else:
         matched_rule = _find_matching_rule(memory_context, answer_type, negation_pattern)
 
@@ -281,41 +331,97 @@ VALID_ANSWER_TYPES = [
     "drug", "disease", "gene/protein", "anatomy", "phenotype", "pathway",
 ]
 
+def _extract_first_json_object(text):
+    """Return the first valid JSON object embedded in model output."""
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            obj, _ = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def _normalize_field_name(field):
+    """Map model field variants onto the PRIME field whitelist."""
+    if not isinstance(field, str):
+        return None
+    raw = field.strip()
+    if not raw:
+        return None
+    candidates = [
+        raw,
+        raw.lower(),
+        raw.replace("-", "_"),
+        raw.lower().replace("-", "_"),
+        raw.replace("-", " "),
+        raw.lower().replace("-", " "),
+        raw.replace("_", " "),
+        raw.lower().replace("_", " "),
+    ]
+    for candidate in candidates:
+        mapped = _FIELD_ALIAS.get(candidate)
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def _normalize_field_list(fields):
+    """Normalize a list of fields, preserving unknown ones for diagnostics."""
+    normalized = []
+    unmapped = []
+    seen = set()
+    seen_unmapped = set()
+    if not isinstance(fields, list):
+        return normalized, unmapped
+
+    for field in fields:
+        mapped = _normalize_field_name(field)
+        if mapped is not None:
+            if mapped not in seen:
+                normalized.append(mapped)
+                seen.add(mapped)
+            continue
+        if isinstance(field, str):
+            cleaned = field.strip()
+            if cleaned and cleaned not in seen_unmapped:
+                unmapped.append(cleaned)
+                seen_unmapped.add(cleaned)
+    return normalized, unmapped
+
+
 def parse_classify_output(raw_output):
     """Parse Stage 1.5 JSON output with negation_pattern and answer_type."""
     cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
     cleaned = cleaned.strip()
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end > start:
-        try:
-            result = json.loads(cleaned[start:end+1])
-            neg_pat = result.get("negation_pattern", "other")
-            answer_type = result.get("answer_type", "unknown")
+    result = _extract_first_json_object(cleaned)
+    if isinstance(result, dict):
+        neg_pat = result.get("negation_pattern", "other")
+        answer_type = result.get("answer_type", "unknown")
 
-            if neg_pat not in VALID_NEG_PATTERNS:
-                neg_pat = "other"
+        if neg_pat not in VALID_NEG_PATTERNS:
+            neg_pat = "other"
 
-            # Normalize answer_type
-            at_lower = (answer_type or "").lower().strip()
-            if at_lower in ("gene", "protein", "gene/protein"):
-                answer_type = "gene/protein"
-            elif at_lower in ("disease", "condition"):
-                answer_type = "disease"
-            elif at_lower in ("anatomy", "anatomical structure", "anatomical part",
-                              "body structure", "tissue", "cellular structure"):
-                answer_type = "anatomy"
-            elif at_lower in ("drug", "medication"):
-                answer_type = "drug"
-            elif at_lower in ("phenotype", "effect/phenotype"):
-                answer_type = "phenotype"
-            else:
-                answer_type = at_lower or "unknown"
+        # Normalize answer_type
+        at_lower = (answer_type or "").lower().strip()
+        if at_lower in ("gene", "protein", "gene/protein"):
+            answer_type = "gene/protein"
+        elif at_lower in ("disease", "condition"):
+            answer_type = "disease"
+        elif at_lower in ("anatomy", "anatomical structure", "anatomical part",
+                          "body structure", "tissue", "cellular structure"):
+            answer_type = "anatomy"
+        elif at_lower in ("drug", "medication"):
+            answer_type = "drug"
+        elif at_lower in ("phenotype", "effect/phenotype"):
+            answer_type = "phenotype"
+        else:
+            answer_type = at_lower or "unknown"
 
-            return neg_pat, answer_type
-        except json.JSONDecodeError:
-            pass
+        return neg_pat, answer_type
 
     return "other", "unknown"
 
@@ -325,39 +431,31 @@ def parse_route_output(raw_output):
     cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
     cleaned = cleaned.strip()
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end > start:
-        try:
-            result = json.loads(cleaned[start:end+1])
+    result = _extract_first_json_object(cleaned)
+    if isinstance(result, dict):
+        answer_type = result.get("answer_type")
+        boost_fields, unmapped_boost_fields = _normalize_field_list(result.get("boost_fields"))
+        suppress_fields, unmapped_suppress_fields = _normalize_field_list(result.get("suppress_fields"))
 
-            answer_type = result.get("answer_type")
-            boost_fields = result.get("boost_fields")
-            suppress_fields = result.get("suppress_fields")
+        # Remove overlaps — keep in boost, remove from suppress
+        boost_set = set(boost_fields)
+        suppress_fields = [f for f in suppress_fields if f not in boost_set]
 
-            if isinstance(boost_fields, list):
-                boost_fields = [_FIELD_ALIAS[f] for f in boost_fields if f in _FIELD_ALIAS]
-            else:
-                boost_fields = []
+        return {
+            "answer_type": answer_type,
+            "boost_fields": boost_fields,
+            "suppress_fields": suppress_fields,
+            "unmapped_boost_fields": unmapped_boost_fields,
+            "unmapped_suppress_fields": unmapped_suppress_fields,
+        }
 
-            if isinstance(suppress_fields, list):
-                suppress_fields = [_FIELD_ALIAS[f] for f in suppress_fields if f in _FIELD_ALIAS]
-            else:
-                suppress_fields = []
-
-            # Remove overlaps — keep in boost, remove from suppress
-            boost_set = set(boost_fields)
-            suppress_fields = [f for f in suppress_fields if f not in boost_set]
-
-            return {
-                "answer_type": answer_type,
-                "boost_fields": boost_fields,
-                "suppress_fields": suppress_fields,
-            }
-        except json.JSONDecodeError:
-            pass
-
-    return {"answer_type": None, "boost_fields": [], "suppress_fields": []}
+    return {
+        "answer_type": None,
+        "boost_fields": [],
+        "suppress_fields": [],
+        "unmapped_boost_fields": [],
+        "unmapped_suppress_fields": [],
+    }
 
 
 # ── Batch Processing ─────────────────────────────────────────────────────────
@@ -373,7 +471,8 @@ def load_cache(cache_path):
     return cache
 
 
-def process_one(qid, query_text, model, endpoint, memory_context, detect_mode="llm", prompt_format="natural"):
+def process_one(qid, query_text, model, endpoint, memory_context, memory_kg=None,
+                detect_mode="llm", prompt_format="natural"):
     """Three-stage processing for a single query.
 
     Stage 1: Detect — does this query need re-routing? (yes/no)
@@ -416,7 +515,14 @@ def process_one(qid, query_text, model, endpoint, memory_context, detect_mode="l
     # Stage 2: route (with matched memory rule)
     try:
         route_raw = call_ollama(
-            build_route_prompt(query_text, memory_context, answer_type, neg_pattern, prompt_format),
+            build_route_prompt(
+                query_text,
+                memory_context,
+                answer_type,
+                neg_pattern,
+                prompt_format=prompt_format,
+                memory_kg=memory_kg,
+            ),
             model, endpoint, max_tokens=150
         )
         parsed = parse_route_output(route_raw)
@@ -432,7 +538,8 @@ def process_one(qid, query_text, model, endpoint, memory_context, detect_mode="l
                 "answer_type": answer_type, "boost_fields": [], "suppress_fields": []}
 
 
-def batch_classify_queries(queries, cache_path, model, endpoints, workers=1, detect_mode="llm", prompt_format="natural"):
+def batch_classify_queries(queries, cache_path, model, endpoints, workers=1, detect_mode="llm",
+                           prompt_format="natural", memory_version=None):
     """
     Three-stage pipeline:
       Stage 1: detect (llm or regex)
@@ -443,7 +550,7 @@ def batch_classify_queries(queries, cache_path, model, endpoints, workers=1, det
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import threading
 
-    memory_context = load_memory_context()
+    memory_context, memory_kg = load_memory_context(memory_version)
 
     cache = load_cache(cache_path)
     print(f"  Cache has {len(cache)} existing entries")
@@ -464,7 +571,17 @@ def batch_classify_queries(queries, cache_path, model, endpoints, workers=1, det
             futures = {}
             for i, (qid, q) in enumerate(remaining):
                 ep = endpoints[i % len(endpoints)]
-                fut = pool.submit(process_one, qid, q, model, ep, memory_context, detect_mode, prompt_format)
+                fut = pool.submit(
+                    process_one,
+                    qid,
+                    q,
+                    model,
+                    ep,
+                    memory_context,
+                    memory_kg,
+                    detect_mode,
+                    prompt_format,
+                )
                 futures[fut] = qid
 
             for future in as_completed(futures):
@@ -524,7 +641,16 @@ def main():
             cache_dir = os.path.join(CACHE_DIR, "stage12", model_tag)
         os.makedirs(cache_dir, exist_ok=True)
         cache_path = os.path.join(cache_dir, f"qwen3_cache_{split}.jsonl")
-        cache = batch_classify_queries(queries, cache_path, args.model, endpoints, workers, args.detect, args.prompt_format)
+        cache = batch_classify_queries(
+            queries,
+            cache_path,
+            args.model,
+            endpoints,
+            workers,
+            args.detect,
+            args.prompt_format,
+            args.memory_version,
+        )
 
         # Summary statistics
         from collections import Counter

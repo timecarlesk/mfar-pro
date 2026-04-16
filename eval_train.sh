@@ -14,7 +14,7 @@ export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 cd /scratch/mcity_project_root/mcity_project/xxxchen/CSE_585/multifield-adaptive-retrieval
 BASE_DIR=data
 
-mkdir -p output/prime_train_eval
+mkdir -p output/contriever/prime_train_eval
 
 echo "=== Running mFAR inference on train split at $(date) ==="
 $MFAR_PYTHON -m mfar.commands.mask_fields \
@@ -22,22 +22,22 @@ $MFAR_PYTHON -m mfar.commands.mask_fields \
     --data $BASE_DIR/prime \
     --lexical-index $BASE_DIR/prime \
     --temp-dir /tmp/mfar_temp/prime_train \
-    --out ./output/prime_train_eval \
+    --out ./output/contriever/prime_train_eval \
     --checkpoint_dir ./output/prime \
     --partition train \
     --field_names "all_dense,all_sparse,single_dense,single_sparse" \
     --dev-batch-size 32 \
     --num_gpus 8 \
     --debug \
-    2>&1 | tee output/prime_train_eval/eval.log
+    2>&1 | tee output/contriever/prime_train_eval/eval.log
 
 echo "=== Train inference done at $(date) ==="
 
 # Filter to train-dev qids
 echo "=== Filtering to train-dev qids ==="
 $MFAR_PYTHON failure_analysis/type_b_memory/meta_harness/filter_qres.py \
-    --qres output/prime_train_eval/final-all-0.qres \
+    --qres output/contriever/prime_train_eval/final-all-0.qres \
     --keep_qids data/prime/train-dev.queries \
-    --output output/prime_eval/final-train-dev-all-0.qres
+    --output output/contriever/prime_eval/final-train-dev-all-0.qres
 
-echo "=== Done. Output: output/prime_eval/final-train-dev-all-0.qres ==="
+echo "=== Done. Output: output/contriever/prime_eval/final-train-dev-all-0.qres ==="

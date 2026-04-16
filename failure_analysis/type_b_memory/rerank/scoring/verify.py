@@ -91,7 +91,9 @@ def _has_effective_reroute(entry):
         return False
     boost = entry.get("boost_fields") or []
     suppress = entry.get("suppress_fields") or []
-    return bool(boost or suppress)
+    unmapped_boost = entry.get("unmapped_boost_fields") or []
+    unmapped_suppress = entry.get("unmapped_suppress_fields") or []
+    return bool(boost or suppress or unmapped_boost or unmapped_suppress)
 
 
 # ── Qwen3 Cache Loading ─────────────────────────────────────────────────────
@@ -167,6 +169,38 @@ def parse_verify_output(raw_output):
     return "yes" in cleaned
 
 
+_VERIFY_ERROR_MARKERS = (
+    "http error",
+    "internal server error",
+    "timed out",
+    "timeout",
+    "connection refused",
+    "connection reset",
+    "remote end closed connection",
+    "service unavailable",
+    "temporary failure",
+    "name or service not known",
+    "nodename nor servname",
+    "[errno",
+)
+
+
+def _looks_like_verify_error(raw_text):
+    lowered = str(raw_text).strip().lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in _VERIFY_ERROR_MARKERS)
+
+
+def _verify_entry_status(entry):
+    status = entry.get("status")
+    if status in {"ok", "error"}:
+        return status
+    if _looks_like_verify_error(entry.get("raw", "")):
+        return "error"
+    return "ok"
+
+
 # ── Verification ─────────────────────────────────────────────────────────────
 
 def verify_one(qid, docid, query, doc_json, boost_fields, model, endpoint,
@@ -182,6 +216,7 @@ def verify_one(qid, docid, query, doc_json, boost_fields, model, endpoint,
             "docid": docid,
             "verified": verified,
             "raw": raw,
+            "status": "ok",
             "memory_version": memory_version,
             "alpha": alpha,
             "top_k": top_k,
@@ -193,6 +228,7 @@ def verify_one(qid, docid, query, doc_json, boost_fields, model, endpoint,
             "docid": docid,
             "verified": False,
             "raw": str(e),
+            "status": "error",
             "memory_version": memory_version,
             "alpha": alpha,
             "top_k": top_k,
@@ -214,6 +250,8 @@ def load_verify_cache(cache_path, memory_version="memory_v1", alpha=0.7, top_k=5
                 if float(entry.get("alpha", alpha)) != float(alpha):
                     continue
                 if int(entry.get("top_k", top_k)) != int(top_k):
+                    continue
+                if _verify_entry_status(entry) != "ok":
                     continue
                 cache[entry["qid"]] = entry
     return cache
@@ -280,6 +318,7 @@ def batch_verify(split, model, endpoints, workers, alpha=0.7, top_k=50, memory_v
     # Verify with thread pool
     write_lock = threading.Lock()
     done = [0]
+    error_count = [0]
 
     with open(cache_path, "a") as f:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -299,14 +338,20 @@ def batch_verify(split, model, endpoints, workers, alpha=0.7, top_k=50, memory_v
                 with write_lock:
                     f.write(json.dumps(entry) + "\n")
                     f.flush()
-                    existing[entry["qid"]] = entry
+                    if entry.get("status") == "ok":
+                        existing[entry["qid"]] = entry
+                    else:
+                        error_count[0] += 1
                     done[0] += 1
                     if done[0] % 100 == 0:
-                        print(f"  Verified {done[0]}/{len(remaining)}")
+                        print(f"  Verified {done[0]}/{len(remaining)} "
+                              f"({error_count[0]} errors)")
 
     # Summary
     verified_yes = sum(1 for e in existing.values() if e.get("verified"))
-    print(f"  Done: {len(existing)} verified, {verified_yes} passed ({100*verified_yes/len(existing):.0f}%)")
+    pass_rate = 100 * verified_yes / len(existing) if existing else 0
+    print(f"  Done: {len(existing)} verified, {verified_yes} passed ({pass_rate:.0f}%), "
+          f"{error_count[0]} errors")
     return existing
 
 

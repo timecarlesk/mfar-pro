@@ -29,7 +29,7 @@ python -m mfar.commands.train \
     --num_gpus 8 \
     --use_batchnorm \
     --additional_partition test \
-    2>&1 | tee output/prime/train.log
+    2>&1 | tee output/contriever/prime/train.log
 
 # ============ MAG (约70万文档) ============
 echo "=== Training MAG at $(date) ==="

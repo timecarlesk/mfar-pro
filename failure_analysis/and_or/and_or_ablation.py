@@ -26,8 +26,8 @@ from utils import (
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 DATA_DIR = "data/prime"
-EVAL_DIR = "output/prime_eval"
-CKPT_DIR = "output/prime"
+EVAL_DIR = "output/contriever/prime_eval"
+CKPT_DIR = "output/contriever/prime"
 OUT_DIR  = "output/failure_analysis/and_or"
 os.makedirs(OUT_DIR, exist_ok=True)
 

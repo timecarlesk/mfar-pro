@@ -64,10 +64,10 @@ python failure_analysis/negation/negation_examples.py
 | Corpus | `data/prime/corpus` |
 | Queries | `data/prime/{val,test}.queries` |
 | QRels | `data/prime/{val,test}.qrels` |
-| Retrieval results (val) | `output/prime_eval/final-all-0.qres` |
-| Retrieval results (test) | `output/prime_eval/final-additional-all-0.qres` |
-| Ablation metrics | `output/prime_eval/results_dicts-all-0.jsonl` |
-| Checkpoint | `output/prime/best.txt` |
+| Retrieval results (val) | `output/contriever/prime_eval/final-all-0.qres` |
+| Retrieval results (test) | `output/contriever/prime_eval/final-additional-all-0.qres` |
+| Ablation metrics | `output/contriever/prime_eval/results_dicts-all-0.jsonl` |
+| Checkpoint | `output/contriever/prime/best.txt` |
 
 ## Analysis Summary
 

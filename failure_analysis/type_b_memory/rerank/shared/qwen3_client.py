@@ -46,6 +46,24 @@ for f in VALID_FIELDS:
     _FIELD_ALIAS[f.replace(" ", "_")] = f
     _FIELD_ALIAS[f.replace("-", "_")] = f
 
+_EXTRA_FIELD_ALIASES = {
+    "contraindications": "contraindication",
+    "indications": "indication",
+    "side effects": "side effect",
+    "adverse effect": "side effect",
+    "adverse effects": "side effect",
+    "association": "associated with",
+    "associations": "associated with",
+    "interaction": "interacts with",
+    "interactions": "interacts with",
+    "off label use": "off-label use",
+}
+for alias, target in _EXTRA_FIELD_ALIASES.items():
+    _FIELD_ALIAS[alias] = target
+    _FIELD_ALIAS[alias.replace(" ", "_")] = target
+for alias, target in list(_FIELD_ALIAS.items()):
+    _FIELD_ALIAS[alias.lower()] = target
+
 # ── Stage 1 Prompt: Detection (short, yes/no) ───────────────────────────────
 
 DETECT_PROMPT = """\
@@ -281,41 +299,97 @@ VALID_ANSWER_TYPES = [
     "drug", "disease", "gene/protein", "anatomy", "phenotype", "pathway",
 ]
 
+def _extract_first_json_object(text):
+    """Return the first valid JSON object embedded in model output."""
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        try:
+            obj, _ = decoder.raw_decode(text[match.start():])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return obj
+    return None
+
+
+def _normalize_field_name(field):
+    """Map model field variants onto the PRIME field whitelist."""
+    if not isinstance(field, str):
+        return None
+    raw = field.strip()
+    if not raw:
+        return None
+    candidates = [
+        raw,
+        raw.lower(),
+        raw.replace("-", "_"),
+        raw.lower().replace("-", "_"),
+        raw.replace("-", " "),
+        raw.lower().replace("-", " "),
+        raw.replace("_", " "),
+        raw.lower().replace("_", " "),
+    ]
+    for candidate in candidates:
+        mapped = _FIELD_ALIAS.get(candidate)
+        if mapped is not None:
+            return mapped
+    return None
+
+
+def _normalize_field_list(fields):
+    """Normalize a list of fields, preserving unknown ones for diagnostics."""
+    normalized = []
+    unmapped = []
+    seen = set()
+    seen_unmapped = set()
+    if not isinstance(fields, list):
+        return normalized, unmapped
+
+    for field in fields:
+        mapped = _normalize_field_name(field)
+        if mapped is not None:
+            if mapped not in seen:
+                normalized.append(mapped)
+                seen.add(mapped)
+            continue
+        if isinstance(field, str):
+            cleaned = field.strip()
+            if cleaned and cleaned not in seen_unmapped:
+                unmapped.append(cleaned)
+                seen_unmapped.add(cleaned)
+    return normalized, unmapped
+
+
 def parse_classify_output(raw_output):
     """Parse Stage 1.5 JSON output with negation_pattern and answer_type."""
     cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
     cleaned = cleaned.strip()
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end > start:
-        try:
-            result = json.loads(cleaned[start:end+1])
-            neg_pat = result.get("negation_pattern", "other")
-            answer_type = result.get("answer_type", "unknown")
+    result = _extract_first_json_object(cleaned)
+    if isinstance(result, dict):
+        neg_pat = result.get("negation_pattern", "other")
+        answer_type = result.get("answer_type", "unknown")
 
-            if neg_pat not in VALID_NEG_PATTERNS:
-                neg_pat = "other"
+        if neg_pat not in VALID_NEG_PATTERNS:
+            neg_pat = "other"
 
-            # Normalize answer_type
-            at_lower = (answer_type or "").lower().strip()
-            if at_lower in ("gene", "protein", "gene/protein"):
-                answer_type = "gene/protein"
-            elif at_lower in ("disease", "condition"):
-                answer_type = "disease"
-            elif at_lower in ("anatomy", "anatomical structure", "anatomical part",
-                              "body structure", "tissue", "cellular structure"):
-                answer_type = "anatomy"
-            elif at_lower in ("drug", "medication"):
-                answer_type = "drug"
-            elif at_lower in ("phenotype", "effect/phenotype"):
-                answer_type = "phenotype"
-            else:
-                answer_type = at_lower or "unknown"
+        # Normalize answer_type
+        at_lower = (answer_type or "").lower().strip()
+        if at_lower in ("gene", "protein", "gene/protein"):
+            answer_type = "gene/protein"
+        elif at_lower in ("disease", "condition"):
+            answer_type = "disease"
+        elif at_lower in ("anatomy", "anatomical structure", "anatomical part",
+                          "body structure", "tissue", "cellular structure"):
+            answer_type = "anatomy"
+        elif at_lower in ("drug", "medication"):
+            answer_type = "drug"
+        elif at_lower in ("phenotype", "effect/phenotype"):
+            answer_type = "phenotype"
+        else:
+            answer_type = at_lower or "unknown"
 
-            return neg_pat, answer_type
-        except json.JSONDecodeError:
-            pass
+        return neg_pat, answer_type
 
     return "other", "unknown"
 
@@ -325,39 +399,31 @@ def parse_route_output(raw_output):
     cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
     cleaned = cleaned.strip()
 
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start != -1 and end > start:
-        try:
-            result = json.loads(cleaned[start:end+1])
+    result = _extract_first_json_object(cleaned)
+    if isinstance(result, dict):
+        answer_type = result.get("answer_type")
+        boost_fields, unmapped_boost_fields = _normalize_field_list(result.get("boost_fields"))
+        suppress_fields, unmapped_suppress_fields = _normalize_field_list(result.get("suppress_fields"))
 
-            answer_type = result.get("answer_type")
-            boost_fields = result.get("boost_fields")
-            suppress_fields = result.get("suppress_fields")
+        # Remove overlaps — keep in boost, remove from suppress
+        boost_set = set(boost_fields)
+        suppress_fields = [f for f in suppress_fields if f not in boost_set]
 
-            if isinstance(boost_fields, list):
-                boost_fields = [_FIELD_ALIAS[f] for f in boost_fields if f in _FIELD_ALIAS]
-            else:
-                boost_fields = []
+        return {
+            "answer_type": answer_type,
+            "boost_fields": boost_fields,
+            "suppress_fields": suppress_fields,
+            "unmapped_boost_fields": unmapped_boost_fields,
+            "unmapped_suppress_fields": unmapped_suppress_fields,
+        }
 
-            if isinstance(suppress_fields, list):
-                suppress_fields = [_FIELD_ALIAS[f] for f in suppress_fields if f in _FIELD_ALIAS]
-            else:
-                suppress_fields = []
-
-            # Remove overlaps — keep in boost, remove from suppress
-            boost_set = set(boost_fields)
-            suppress_fields = [f for f in suppress_fields if f not in boost_set]
-
-            return {
-                "answer_type": answer_type,
-                "boost_fields": boost_fields,
-                "suppress_fields": suppress_fields,
-            }
-        except json.JSONDecodeError:
-            pass
-
-    return {"answer_type": None, "boost_fields": [], "suppress_fields": []}
+    return {
+        "answer_type": None,
+        "boost_fields": [],
+        "suppress_fields": [],
+        "unmapped_boost_fields": [],
+        "unmapped_suppress_fields": [],
+    }
 
 
 # ── Batch Processing ─────────────────────────────────────────────────────────

@@ -3,9 +3,9 @@ Filter a .qres file to keep only queries in a specified qid set.
 
 Usage:
     python failure_analysis/type_b_memory/meta_harness/filter_qres.py \
-        --qres output/prime_train_eval/final-all-0.qres \
+        --qres output/contriever/prime_train_eval/final-all-0.qres \
         --keep_qids data/prime/train-dev.queries \
-        --output output/prime_eval/final-train-dev-all-0.qres
+        --output output/contriever/prime_eval/final-train-dev-all-0.qres
 """
 
 import argparse

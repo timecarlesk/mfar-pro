@@ -3,7 +3,7 @@ import json
 from collections import defaultdict
 
 DATA_DIR = "data/prime"
-EVAL_DIR = "output/prime_eval"
+EVAL_DIR = "output/contriever/prime_eval"
 
 # 1. Load queries
 queries = {}

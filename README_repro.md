@@ -37,7 +37,7 @@ bash train_all.sh   # also auto-runs eval_all.sh after training
 
 Best checkpoint at **epoch 13** (`valid_loss=2.661`).
 
-Training log: `output/prime/train.log`
+Training log: `output/contriever/prime/train.log`
 
 ## Evaluation (v3)
 
@@ -47,7 +47,7 @@ bash eval_all.sh
 
 The evaluation runs a **field masking ablation** (72 configurations): for each of the 23 fields, it zeroes out the learned weights for dense-only, sparse-only, and both scorers, then re-ranks the full test set. This measures each field's contribution to the final retrieval score.
 
-Eval log: `output/prime_eval/eval.log`
+Eval log: `output/contriever/prime_eval/eval.log`
 
 ### Baseline Results (Test Set)
 

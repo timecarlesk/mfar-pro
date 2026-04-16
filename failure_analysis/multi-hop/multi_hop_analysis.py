@@ -22,7 +22,7 @@ from utils import load_queries, load_qrels, load_retrieved
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 DATA_DIR = "data/prime"
-EVAL_DIR = "output/prime_eval"
+EVAL_DIR = "output/contriever/prime_eval"
 OUT_DIR = "output/failure_analysis/multi-hop"
 
 os.makedirs(OUT_DIR, exist_ok=True)

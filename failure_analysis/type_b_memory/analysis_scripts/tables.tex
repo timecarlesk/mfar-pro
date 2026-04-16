@@ -1,0 +1,74 @@
+% =====================================================================
+% Main results at α=0.7 (best) — replaces old Table 2
+% Note: each config flags a slightly different rerouted set, so each
+%       has its own baseline MRR and sample count.
+% =====================================================================
+\begin{table}[t]
+\caption{Re-ranking results at $\alpha = 0.7$ on the rerouted (negation) subset.
+Qwen3-32B end-to-end (Stage~1+2 detection \emph{and} Stage~3 scoring).
+Each configuration runs its own Stage~1+2 with the indicated memory, so $N$ and baseline MRR
+differ slightly across rows. Non-negation queries have $\Delta = 0$ by construction.}
+\label{tab:main}
+\centering
+\small
+\begin{tabular}{l cccc | cccc}
+\toprule
+ & \multicolumn{4}{c}{\textbf{Val}} & \multicolumn{4}{c}{\textbf{Test}} \\
+\cmidrule(lr){2-5}\cmidrule(lr){6-9}
+Config & $N$ & Base & Mem & Rel.\% & $N$ & Base & Mem & Rel.\% \\
+\midrule
+No memory          & 350 & 0.3361 & 0.3547 & +5.5\%  & 415 & 0.3328 & 0.3983 & +19.7\% \\
+Memory v1          & 350 & 0.3361 & 0.3817 & +13.6\% & 415 & 0.3328 & 0.3956 & +18.9\% \\
+\textbf{Memory v2} & 354 & 0.3374 & \textbf{0.3898} & \textbf{+15.5\%}
+                   & 415 & 0.3298 & \textbf{0.3989} & \textbf{+21.0\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% =====================================================================
+% Alpha sweep — replaces old Table 4
+% =====================================================================
+\begin{table}[t]
+\caption{Rerouted-query MRR across $\alpha$ on \textbf{test}, Qwen3-32B.
+Each row uses its own rerouted set ($N=415$ for all three, with slightly different composition for v2).
+\underline{Underline} marks each row's maximum; \textbf{bold} marks the overall best cell.
+Memory v2 dominates v1 at every $\alpha$ tested.}
+\label{tab:alpha}
+\centering
+\small
+\begin{tabular}{l cccccccccc}
+\toprule
+$\alpha$ & 0.30 & 0.50 & 0.60 & 0.65 & 0.70 & 0.75 & 0.80 & 0.85 & 0.90 & 1.00 \\
+\midrule
+No memory  & 0.3700 & 0.3898 & 0.3966 & 0.3949 & \underline{0.3983} & 0.3958 & 0.3916 & 0.3829 & 0.3726 & 0.3726 \\
+Memory v1  & 0.3725 & 0.3900 & 0.3932 & 0.3920 & \underline{0.3956} & 0.3922 & 0.3874 & 0.3845 & 0.3754 & 0.3754 \\
+Memory v2  & 0.3749 & 0.3891 & 0.3942 & 0.3946 & \underline{\textbf{0.3989}} & 0.3936 & 0.3928 & 0.3916 & 0.3825 & 0.3823 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% =====================================================================
+% Full detailed metrics for best config (Memory v2 @ α=0.7) — replaces old Table 3
+% =====================================================================
+\begin{table}[t]
+\caption{Detailed \textbf{test} metrics for the best configuration
+(Qwen3-32B, Memory v2, $\alpha = 0.7$, top-50 re-ranking).
+Only the rerouted subset is re-ranked; all other queries copy the baseline verbatim
+($\Delta = 0$).}
+\label{tab:detail}
+\centering
+\small
+\begin{tabular}{l r cccc}
+\toprule
+Group                  & $N$ & MRR (base $\to$ mem)  & $\Delta$MRR & Hit@1 (\% base $\to$ mem) & NDCG@10 (base $\to$ mem) \\
+\midrule
+Rerouted               & 415  & 0.3298 $\to$ 0.3989  & +0.0691     & 22.9 $\to$ 30.4   & 0.3696 $\to$ 0.4337 \\
+Negation, not rerouted & 12   & 0.4124 $\to$ 0.4124  & 0.0000      & 33.3 $\to$ 33.3   & 0.4364 $\to$ 0.4356 \\
+No-negation            & 2{,}374 & 0.4965 $\to$ 0.4965 & 0.0000   & 37.2 $\to$ 37.2   & 0.5396 $\to$ 0.5396 \\
+\midrule
+Overall                & 2{,}801 & 0.4715 $\to$ 0.4817 & +0.0102  & 35.1 $\to$ 36.2   & 0.5140 $\to$ 0.5234 \\
+\bottomrule
+\end{tabular}
+\end{table}

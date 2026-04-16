@@ -11,7 +11,7 @@ NEGATION_PATTERN = re.compile(
 )
 
 DATA_DIR = "data/prime"
-EVAL_DIR = "output/prime_eval"
+EVAL_DIR = "output/contriever/prime_eval"
 
 # Load data
 corpus = {}

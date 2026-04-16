@@ -29,8 +29,8 @@ from utils import (RELATION_FIELDS, BASIC_FIELDS, ALL_FIELDS,
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 DATA_DIR     = "data/prime"
-EVAL_DIR     = "output/prime_eval"
-ABLATION_DIR = "output/prime_eval"
+EVAL_DIR     = "output/contriever/prime_eval"
+ABLATION_DIR = "output/contriever/prime_eval"
 OUT_DIR      = "output/failure_analysis/general"
 
 os.makedirs(OUT_DIR, exist_ok=True)

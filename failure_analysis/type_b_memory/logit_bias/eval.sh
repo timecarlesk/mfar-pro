@@ -69,7 +69,7 @@ echo "=== Done at $(date) ==="
 # ── Run comparison analysis ──────────────────────────────────────────────────
 echo "=== Running comparison analysis ==="
 $MFAR_PYTHON failure_analysis/type_b_memory/evaluate_memory.py \
-    --baseline_dir output/prime_eval \
+    --baseline_dir output/contriever/prime_eval \
     --memory_dir $RUNS_DIR \
     --splits val test \
     2>&1 | tee $RUNS_DIR/comparison.log

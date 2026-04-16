@@ -1,0 +1,186 @@
+{
+  "split": "test",
+  "alpha": 0.7,
+  "rows": [
+    {
+      "group": "anatomy|not_expressed",
+      "n": 91,
+      "baseline": 0.3655,
+      "v1": 0.3684,
+      "v2": 0.3526,
+      "no_memory": 0.374,
+      "v2_minus_v1": -0.0159,
+      "v2_minus_no_mem": -0.0215
+    },
+    {
+      "group": "gene/protein|not_expressed",
+      "n": 89,
+      "baseline": 0.4299,
+      "v1": 0.4958,
+      "v2": 0.4984,
+      "no_memory": 0.479,
+      "v2_minus_v1": 0.0025,
+      "v2_minus_no_mem": 0.0194
+    },
+    {
+      "group": "disease|not_indicated",
+      "n": 78,
+      "baseline": 0.2675,
+      "v1": 0.3606,
+      "v2": 0.3473,
+      "no_memory": 0.3663,
+      "v2_minus_v1": -0.0133,
+      "v2_minus_no_mem": -0.0191
+    },
+    {
+      "group": "disease|lacking_treatment",
+      "n": 68,
+      "baseline": 0.2153,
+      "v1": 0.2156,
+      "v2": 0.2151,
+      "no_memory": 0.2099,
+      "v2_minus_v1": -0.0005,
+      "v2_minus_no_mem": 0.0052
+    },
+    {
+      "group": "disease|avoid_contraindicated",
+      "n": 47,
+      "baseline": 0.3542,
+      "v1": 0.5212,
+      "v2": 0.5466,
+      "no_memory": 0.5882,
+      "v2_minus_v1": 0.0253,
+      "v2_minus_no_mem": -0.0416
+    },
+    {
+      "group": "drug|not_indicated",
+      "n": 8,
+      "baseline": 0.2115,
+      "v1": 0.397,
+      "v2": 0.4596,
+      "no_memory": 0.3633,
+      "v2_minus_v1": 0.0626,
+      "v2_minus_no_mem": 0.0963
+    },
+    {
+      "group": "drug|no_side_effect",
+      "n": 7,
+      "baseline": 0.1295,
+      "v1": 0.4082,
+      "v2": 0.4268,
+      "no_memory": 0.3097,
+      "v2_minus_v1": 0.0186,
+      "v2_minus_no_mem": 0.1171
+    },
+    {
+      "group": "drug|not_associated",
+      "n": 5,
+      "baseline": 0.7,
+      "v1": 0.6,
+      "v2": 0.7,
+      "no_memory": 0.8,
+      "v2_minus_v1": 0.1,
+      "v2_minus_no_mem": -0.1
+    },
+    {
+      "group": "drug|avoid_contraindicated",
+      "n": 5,
+      "baseline": 0.0327,
+      "v1": 0.14,
+      "v2": 0.14,
+      "no_memory": 0.1133,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0267
+    },
+    {
+      "group": "disease|not_associated",
+      "n": 4,
+      "baseline": 0.5417,
+      "v1": 0.4524,
+      "v2": 0.4688,
+      "no_memory": 0.5083,
+      "v2_minus_v1": 0.0164,
+      "v2_minus_no_mem": -0.0396
+    },
+    {
+      "group": "anatomy|not_associated",
+      "n": 3,
+      "baseline": 0.4303,
+      "v1": 0.6111,
+      "v2": 0.6111,
+      "no_memory": 0.4861,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.125
+    },
+    {
+      "group": "drug|other",
+      "n": 2,
+      "baseline": 0.1667,
+      "v1": 0.1667,
+      "v2": 0.1667,
+      "no_memory": 0.1667,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0
+    },
+    {
+      "group": "disease|other",
+      "n": 2,
+      "baseline": 0.5,
+      "v1": 0.5,
+      "v2": 0.5,
+      "no_memory": 0.5,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0
+    },
+    {
+      "group": "gene/protein|not_associated",
+      "n": 2,
+      "baseline": 0.1385,
+      "v1": 0.525,
+      "v2": 0.1905,
+      "no_memory": 0.0812,
+      "v2_minus_v1": -0.3345,
+      "v2_minus_no_mem": 0.1093
+    },
+    {
+      "group": "tumor|other",
+      "n": 1,
+      "baseline": 1.0,
+      "v1": 1.0,
+      "v2": 1.0,
+      "no_memory": 1.0,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0
+    },
+    {
+      "group": "treatment|not_indicated",
+      "n": 1,
+      "baseline": 0.125,
+      "v1": 0.5,
+      "v2": 0.5,
+      "no_memory": 0.5,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0
+    },
+    {
+      "group": "disease|phenotype_absent",
+      "n": 1,
+      "baseline": 1.0,
+      "v1": 1.0,
+      "v2": 1.0,
+      "no_memory": 1.0,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0
+    },
+    {
+      "group": "gene/protein|other",
+      "n": 1,
+      "baseline": 1.0,
+      "v1": 1.0,
+      "v2": 1.0,
+      "no_memory": 1.0,
+      "v2_minus_v1": 0.0,
+      "v2_minus_no_mem": 0.0
+    }
+  ]
+}

@@ -31,10 +31,10 @@ from mfar.data.schema import resolve_fields
 
 # ── Paths ────────────────────────────────���───────────────────────────────────
 
-CHECKPOINT_PATH = "output/prime"
+CHECKPOINT_PATH = "output/contriever/prime"
 ANALYSIS_DIR = "output/failure_analysis/type_b_memory/analysis"
 CACHE_DIR = "output/failure_analysis/type_b_memory/cache"
-OUTPUT_DIR = "output/prime_W_finetune"
+OUTPUT_DIR = "output/contriever/prime_W_finetune"
 DATA_DIR = "data/prime"
 
 # ── Field Index Mapping ──────────────────────────────────────────────────────

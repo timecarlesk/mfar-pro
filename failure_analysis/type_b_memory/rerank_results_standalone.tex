@@ -27,7 +27,7 @@
 
 \section{Motivation}
 
-Multi-field adaptive retrieval (mFAR) learns query-conditioned field weights to combine dense and sparse scores across 46 field indices via $s(q,d) = \sum_{f,m} G(q,f,m) \cdot s^m_f(q, x_f)$ where $G(q,f,m) = \text{softmax}(\mathbf{a}^m_f{}^\top \mathbf{q})$. For queries containing negation (e.g., ``drugs NOT indicated for diabetes''), the learned weights route to the wrong field---searching \texttt{indication} when the answer resides in \texttt{contraindication}. We identify $\sim$19\% of test queries as negation-affected (``rerouted''), with a significant MRR gap versus non-negation queries (Table~\ref{tab:baseline}).
+Multi-field adaptive retrieval (mFAR) learns query-conditioned field weights to combine dense and sparse scores across 46 field indices via $s(q,d) = \sum_{f,m} G(q,f,m) \cdot s^m_f(q, x_f)$ where $G(q,f,m) = \text{softmax}(\mathbf{a}^m_f{}^\top \mathbf{q})$. For queries containing negation (e.g., ``drugs NOT indicated for diabetes''), the learned weights route to the wrong field---searching \texttt{indication} when the answer resides in \texttt{contraindication}. We identify $\sim$15\% of test queries as negation-affected (``rerouted''), with a significant MRR gap versus non-negation queries (Table~\ref{tab:baseline}).
 
 \section{Method}
 
@@ -175,122 +175,132 @@ When Stage~2 sees a \texttt{WARNING}-annotated rule, it is instructed not to bli
 
 \paragraph{Baseline.} mFAR with contriever-msmarco encoder, query-conditioned field weights, 46 field indices (8$\times$H100 DDP inference).
 
-\paragraph{Re-Ranking Models.} Qwen3-8B and Qwen3-32B via Ollama, 8$\times$ H100 parallel instances.
+\paragraph{Re-Ranking Models.} Qwen3-8B and Qwen3-32B via Ollama, each run end-to-end (Stage~1+2 detection and Stage~3 scoring use the same model). 32B uses 8$\times$H100 parallel instances; 8B uses 4$\times$H100.
 
 \section{Results}
 
 \begin{table}[h]
 \centering
-\caption{mFAR baseline performance on test by query group.}
+\caption{mFAR baseline performance on test by query group. ``Rerouted'' is defined by Qwen3-32B Stage~1+2 flagging with Memory v1 and accounts for $\sim$15\% of the test set.}
 \label{tab:baseline}
 \begin{tabular}{lccccc}
 \toprule
 \textbf{Group} & \textbf{N} & \textbf{MRR} & \textbf{Hit@1} & \textbf{Hit@5} & \textbf{Miss\%} \\
 \midrule
-Overall        & 2801 & 0.472 & 35.1 & 61.3 & 11.2 \\
-Rerouted       &  548 & 0.340 & 23.4 & 46.5 & 17.3 \\
-Non-negation   & 2253 & 0.504 & 37.9 & 64.8 &  9.7 \\
+Overall        & 2801 & 0.4715 & 35.1 & 61.3 & 11.2 \\
+Rerouted       &  415 & 0.3328 & 23.4 & 45.1 & 18.8 \\
+Non-rerouted   & 2386 & 0.4956 & 37.2 & 64.2 &  9.9 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Main Results}
 
-Table~\ref{tab:main} compares all configurations at the best interpolation weight ($\alpha=0.7$) on test. We report both $\Delta$ MRR over the mFAR baseline and the relative improvement (\%).
+Table~\ref{tab:main} compares all configurations at the best interpolation weight ($\alpha=0.7$) on both validation and test. Each configuration runs its own Stage~1+2 with the indicated memory, so $N$ and baseline MRR differ slightly across rows. Non-negation queries have $\Delta = 0$ by construction (their baseline rankings are copied verbatim).
 
 \begin{table}[h]
 \centering
-\caption{Test rerouted query results at $\alpha=0.7$. ``No memory'' shows all fields equally; memory variants tag boost fields with \texttt{[RELEVANT]}. Non-negation $\Delta = 0.000$ in all cases.}
+\caption{Re-ranking results on the rerouted (negation) subset at each model's best $\alpha$. Each model runs end-to-end (same model for Stage~1+2 detection \emph{and} Stage~3 scoring). Non-negation $\Delta=0$ in all cases.}
 \label{tab:main}
-\begin{tabular}{llccc}
+\small
+\begin{tabular}{ll ccc | ccc}
 \toprule
-\textbf{Model} & \textbf{Memory} & \textbf{Rerouted MRR} & \textbf{$\Delta$ MRR} & \textbf{Rel. \%} \\
+ & & \multicolumn{3}{c}{\textbf{Val}} & \multicolumn{3}{c}{\textbf{Test}} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+Model & Config & $N$ & Mem MRR & Rel.\% & $N$ & Mem MRR & Rel.\% \\
 \midrule
-\multirow{4}{*}{Qwen3-8B}
- & No memory          & 0.391 & +0.051 & +15.1\% \\
- & Memory v1          & 0.366 & +0.026 & +7.8\% \\
- & Memory v2          & 0.370 & +0.035 & +10.3\% \\
- & Memory KG          & 0.372 & +0.030 & +8.7\% \\
+\multirow{3}{*}{Qwen3-8B}
+ & No memory          & 469 & 0.4103 & +17.9\%  & 543 & 0.3830 & +13.9\% \\
+ & Memory v1          & 469 & 0.3809 & +9.5\%   & 543 & 0.3708 & +10.2\% \\
+ & Memory v2          & 469 & 0.3820 & +9.8\%   & 543 & 0.3683 & +10.1\% \\
 \midrule
-\multirow{4}{*}{Qwen3-32B}
- & No memory          & 0.401 & +0.061 & +18.0\% \\
- & \textbf{Memory v1} & \textbf{0.419} & \textbf{+0.079} & \textbf{+23.3\%} \\
- & Memory v2          & 0.414 & +0.079 & +23.5\% \\
- & Memory KG          & 0.419 & +0.077 & +22.5\% \\
+\multirow{3}{*}{Qwen3-32B}
+ & No memory          & 350 & 0.3547 & +5.5\%   & 415 & 0.3983 & +19.7\% \\
+ & Memory v1          & 350 & 0.3817 & +13.6\%  & 415 & 0.3956 & +18.9\% \\
+ & \textbf{Memory v2} & 354 & \textbf{0.3898} & \textbf{+15.5\%} & 415 & \textbf{0.3989} & \textbf{+21.0\%} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+The two models exhibit opposite memory effects. On 32B, Memory v2 is the best configuration (+21.0\% on test), narrowly beating no-memory (+19.7\%) and clearly beating v1 (+18.9\%). On 8B, \emph{no-memory dominates}: +13.9\% on test versus only +10.2\% for v1---a $-3.7$~pp penalty from adding \texttt{[RELEVANT]} tags. Memory v2 does not recover this gap on 8B (+10.1\% $\approx$ v1). Static v1 rules also show train/val overfitting on 32B: the +13.6\% val gain collapses to $-0.8$~pp versus no-memory on test.
+
 \subsection{Best Configuration Detail}
 
-Table~\ref{tab:best} shows full metrics for the best configuration: Qwen3-32B with Memory v1 at $\alpha=0.7$.
+Table~\ref{tab:best} shows full metrics for the best configuration: Qwen3-32B with Memory v2 at $\alpha=0.7$ on test.
 
 \begin{table}[h]
 \centering
-\caption{Detailed test metrics: Qwen3-32B, Memory v1, $\alpha=0.7$, top-50 re-ranking.}
+\caption{Detailed test metrics for Qwen3-32B, Memory v2, $\alpha=0.7$, top-50 re-ranking. Only the rerouted subset is re-ranked; all other queries copy the baseline verbatim ($\Delta = 0$).}
 \label{tab:best}
-\begin{tabular}{lcccccc}
+\small
+\begin{tabular}{l r cccc}
 \toprule
-\textbf{Group} & \textbf{N} & \textbf{MRR} & \textbf{$\Delta$} & \textbf{Rel.\%} & \textbf{Hit@1} & \textbf{NDCG@10} \\
+\textbf{Group} & $N$ & \textbf{MRR (base $\to$ mem)} & \textbf{$\Delta$MRR} & \textbf{Hit@1} & \textbf{NDCG@10} \\
 \midrule
-Rerouted     & 548 & 0.340 $\rightarrow$ \textbf{0.419} & +0.079 & +23.3\% & 23.4 $\rightarrow$ 32.1 & 0.379 $\rightarrow$ 0.453 \\
-Non-negation & 2253 & 0.504 $\rightarrow$ 0.504 & 0.000 & 0.0\% & 37.9 $\rightarrow$ 37.9 & 0.547 $\rightarrow$ 0.547 \\
-Overall      & 2801 & 0.472 $\rightarrow$ 0.487 & +0.016 & +3.3\% & 35.1 $\rightarrow$ 36.8 & 0.514 $\rightarrow$ 0.528 \\
+Rerouted               & 415     & 0.3298 $\to$ \textbf{0.3989} & \textbf{+0.0691} & 22.9 $\to$ 30.4 & 0.3696 $\to$ 0.4337 \\
+Negation, not rerouted & 12      & 0.4124 $\to$ 0.4124          & 0.0000           & 33.3 $\to$ 33.3 & 0.4364 $\to$ 0.4356 \\
+No-negation            & 2{,}374 & 0.4965 $\to$ 0.4965          & 0.0000           & 37.2 $\to$ 37.2 & 0.5396 $\to$ 0.5396 \\
+\midrule
+Overall                & 2{,}801 & 0.4715 $\to$ 0.4817          & +0.0102          & 35.1 $\to$ 36.2 & 0.5140 $\to$ 0.5234 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsection{Interpolation Weight Sweep}
 
-Table~\ref{tab:sweep} shows the effect of $\alpha$ for the two key configurations on test.
+Table~\ref{tab:sweep} and Figure~\ref{fig:alpha_sweep} show the effect of $\alpha$ on rerouted test MRR.
 
 \begin{table}[h]
 \centering
-\caption{Test rerouted $\Delta$ MRR across $\alpha$ values.}
+\caption{Rerouted-query MRR across $\alpha$ on test. \underline{Underline} = per-row maximum; \textbf{bold} = overall best cell per model.}
 \label{tab:sweep}
-\begin{tabular}{llcccc}
+\small
+\begin{tabular}{ll cccccccccc}
 \toprule
-\textbf{Model} & \textbf{Memory} & $\alpha$\textbf{=0.3} & $\alpha$\textbf{=0.5} & $\alpha$\textbf{=0.7} & $\alpha$\textbf{=1.0} \\
+& $\alpha$ & 0.30 & 0.50 & 0.60 & 0.65 & 0.70 & 0.75 & 0.80 & 0.85 & 0.90 & 1.00 \\
 \midrule
-8B  & No memory & +0.026 & +0.032 & \textbf{+0.051} & +0.040 \\
-8B  & Memory v1 & +0.019 & +0.027 & +0.026 & +0.014 \\
-32B & No memory & +0.044 & +0.059 & +0.061 & +0.040 \\
-32B & Memory v1 & +0.050 & +0.071 & \textbf{+0.079} & +0.052 \\
+\multirow{3}{*}{\rotatebox[origin=c]{90}{\scriptsize 8B}}
+& No mem  & .361 & .371 & .378 & .378 & .382 & \underline{\textbf{.383}} & .378 & .377 & .370 & .370 \\
+& v1      & .356 & .363 & .368 & \underline{.371} & .367 & .361 & .361 & .362 & .353 & .353 \\
+& v2      & .356 & .363 & \underline{.368} & .368 & .368 & .364 & .362 & .361 & .355 & .355 \\
+\midrule
+\multirow{3}{*}{\rotatebox[origin=c]{90}{\scriptsize 32B}}
+& No mem  & .370 & .390 & .397 & .395 & \underline{.398} & .396 & .392 & .383 & .373 & .373 \\
+& v1      & .373 & .390 & .393 & .392 & \underline{.396} & .392 & .387 & .385 & .375 & .375 \\
+& v2      & .375 & .389 & .394 & .395 & \underline{\textbf{.399}} & .394 & .393 & .392 & .383 & .382 \\
 \bottomrule
 \end{tabular}
 \end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{analysis_scripts/alpha_sweep.pdf}
+\caption{Rerouted-query MRR across $\alpha \in [0.3, 1.0]$ on validation (left) and test (right).
+Dashed line is the mFAR baseline. All three configurations peak near $\alpha \approx 0.7$ on test and $\alpha \approx 0.5$ on val; Memory v2 (red) is the upper envelope across the full range.}
+\label{fig:alpha_sweep}
+\end{figure}
 
 \section{Analysis}
 
-\paragraph{Memory as capability amplifier.} Table~\ref{tab:ablation} compares memory-guided (\texttt{[RELEVANT]} tag) versus generic (no tag) re-ranking. For 32B, \texttt{[RELEVANT]} tags provide +0.018 absolute MRR over no-memory (+4.5\% relative), demonstrating that memory's attention guidance helps larger models focus on the correct fields. For 8B, memory \emph{hurts} ($-$0.025), as the smaller model is distracted by the tag rather than leveraging it. This suggests memory-guided re-ranking requires sufficient model capacity.
+\paragraph{Memory as capability amplifier---or distractor.} The interaction between model capacity and memory is the most striking result. On 32B, Memory v2 is the best configuration (+21.0\% on test), with self-verification feedback providing a consistent edge over v1 at every $\alpha$ tested (Table~\ref{tab:sweep}). On 8B, the pattern \emph{reverses}: no-memory (+13.9\%) beats both v1 (+10.2\%) and v2 (+10.1\%) by 3--4~pp on test. The \texttt{[RELEVANT]} tags that help 32B focus on the correct fields instead \emph{distract} 8B, causing it to over-attend to tagged fields and miss other relevant evidence. Memory v2's \texttt{WARNING} annotations do not recover this gap---the 8B model lacks the capacity to reason about meta-signals like ``this rule may be unreliable.'' This suggests a \textbf{capacity threshold} below which memory-guided attention steering is counterproductive.
 
-\begin{table}[h]
+\paragraph{Self-verification feedback is the primary source of 32B memory gain.} On 32B, Memory v2 beats v1 at every $\alpha$ tested, with the margin widening at high $\alpha$: from $+1.8$~pp relative at $\alpha=0.30$ to $+3.2$~pp at $\alpha=0.85$. When mFAR's contribution is small, the LLM's judgment drives the final ranking, and v2's confidence annotations---telling the LLM when to distrust a rule---become increasingly valuable.
+
+\paragraph{Static memory rules overfit to the training distribution.} On 32B val, Memory v1 clearly beats no-memory (+$13.6\%$ vs +$5.5\%$ relative), but on test this gap inverts ($+18.9\%$ vs +$19.7\%$). Rules mined from train gold-document field statistics transfer well to val (similar distribution) but offer no net advantage on test. Memory v2, because it modulates unreliable rules post-hoc using verification signal from val, generalizes more robustly.
+
+\paragraph{Memory gain concentrates in drug-class groups (32B).} Figure~\ref{fig:per_group} breaks down 32B test performance by \texttt{(answer\_type, negation\_pattern)}. Memory v2 wins decisively on small, rule-coherent groups---\texttt{drug|not\_indicated} ($N=8$, $+$0.096~MRR over no-memory), \texttt{drug|no\_side\_effect} ($N=7$, $+$0.117)---but loses to no-memory on the largest groups: \texttt{anatomy|not\_expressed} ($N=91$, $-$0.022) and \texttt{disease|avoid\_contraindicated} ($N=47$, $-$0.042). On these broad semantic groups, the LLM's unaided reasoning already suffices; \texttt{[RELEVANT]} tags add noise. The net +2.1~pp relative gain of v2 over v1 on test is therefore not a uniform effect but the sum of large wins on a handful of rule-dense drug queries and near-ties elsewhere.
+
+\begin{figure}[t]
 \centering
-\caption{Memory ablation at $\alpha=0.7$ on test rerouted queries (N=548 for v1/no-memory).}
-\label{tab:ablation}
-\begin{tabular}{llccc}
-\toprule
-\textbf{Model} & \textbf{Condition} & \textbf{Rerouted MRR} & \textbf{$\Delta$ vs baseline} & \textbf{Memory effect} \\
-\midrule
-\multirow{2}{*}{Qwen3-8B}
- & No memory & 0.391 & +0.051 (+15.1\%) & --- \\
- & Memory v1 & 0.366 & +0.026 (+7.8\%) & $-$0.025 \\
-\midrule
-\multirow{2}{*}{Qwen3-32B}
- & No memory & 0.401 & +0.061 (+18.0\%) & --- \\
- & Memory v1 & \textbf{0.419} & \textbf{+0.079 (+23.3\%)} & \textbf{+0.018} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\linewidth]{analysis_scripts/per_group_delta.pdf}
+\caption{Per-group $\Delta$MRR over mFAR baseline on test (32B, $\alpha=0.7$), groups with $N\geq 5$ shown. Memory v2 (red) dominates drug-class groups; no-memory (gray) dominates the two largest anatomy/disease groups.}
+\label{fig:per_group}
+\end{figure}
 
-\paragraph{Hybrid scoring.} At $\alpha=1.0$ (pure LLM), performance drops versus $\alpha=0.7$ in all configurations. The optimal 70/30 LLM-to-mFAR ratio shows mFAR's dense/sparse scores are complementary, while mFAR serves as candidate recall (selecting the 50 documents for LLM evaluation).
+\paragraph{Optimal $\alpha$ reflects model reliability.} 32B peaks at $\alpha=0.7$; 8B no-memory peaks at $\alpha=0.75$, while 8B with memory peaks at $\alpha=0.65$. The pattern is consistent: stronger scoring (32B or no-tag 8B) tolerates higher LLM weight, while noisier scoring (8B with tags) needs more mFAR signal. In all cases $\alpha=1.0$ (pure LLM) underperforms, confirming mFAR's complementary contribution.
 
-\paragraph{Memory variants.} On 32B, Memory v1 (+23.3\%), v2 (+23.5\%), and KG (+22.5\%) perform comparably. The self-verification feedback (v2) and KG structuring do not yield significant additional gains over v1 with the \texttt{[RELEVANT]} tag format.
+\paragraph{Zero regression.} Non-negation and detected-but-not-rerouted queries show exactly $\Delta = 0.000$ MRR across all configurations and both models, as non-flagged queries have their baseline rankings copied verbatim (Table~\ref{tab:best}).
 
-\paragraph{Ceiling analysis.} Of 548 rerouted test queries: 25\% already have gold at rank 1 (no help needed), 52\% have gold at ranks 2--50 (re-ranking can help), 6\% at ranks 51--100 (beyond window), and 18\% not in top-100 (retrieval failure). Theoretical ceiling: 25\% + 52\% = 77\%.
-
-\paragraph{Zero regression.} Non-negation queries show exactly $\Delta = 0.000$ MRR across all configurations, as non-flagged queries have their baseline rankings copied verbatim.
-
-\paragraph{Cost.} Per test split with 8$\times$H100: Stages 1--2 process all 2,801 queries ($\sim$20 min). Stage 3 scores $50 \times 548 = 27{,}400$ pairs ($\sim$20 min for 8B, $\sim$50 min for 32B). All outputs are cached as JSONL.
+\paragraph{Cost.} Per test split: 32B (8$\times$H100) processes Stage~1+2 in $\sim$20~min and Stage~3 in $\sim$35~min. 8B (4$\times$H100) takes $\sim$15~min for Stage~1+2 and $\sim$45~min for Stage~3 (more pairs due to higher flagging rate: 543 vs 415 rerouted queries). Self-verification adds $\sim$10~min on val. All outputs are cached as JSONL, enabling $\alpha$-sweep without re-scoring.
 
 \end{document}

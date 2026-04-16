@@ -25,9 +25,11 @@ Run from project root:
 """
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import random
 import re
 import sys
 from collections import defaultdict
@@ -45,7 +47,9 @@ from failure_analysis.type_b_memory.rerank.shared.qwen3_client import call_ollam
 DATA_DIR = "data/prime"
 BASE_CACHE_DIR = "output/failure_analysis/type_b_memory/cache"
 BASE_RUNS_DIR = "output/failure_analysis/type_b_memory/runs"
+ANALYSIS_DIR = "output/failure_analysis/type_b_memory/analysis"
 DOC_FORMAT_VERSION = "relevant_tag_all_fields_v1"
+DISCRIMINATION_RULES_PATH = os.path.join(ANALYSIS_DIR, "discrimination_rules.json")
 
 
 def _model_tag(model_name):
@@ -61,9 +65,9 @@ def _memory_label(memory_version=None, no_memory=False):
     return base
 
 BASELINE_QRES = {
-    "train": "output/prime_train_eval/final-all-0.qres",
-    "val": "output/prime_eval/final-all-0.qres",
-    "test": "output/prime_eval/final-additional-all-0.qres",
+    "train": "output/contriever/prime_train_eval/final-all-0.qres",
+    "val": "output/contriever/prime_eval/final-all-0.qres",
+    "test": "output/contriever/prime_eval/final-additional-all-0.qres",
 }
 
 RERANKED_QRES = {
@@ -89,11 +93,47 @@ def load_corpus_docs(data_dir, docid_set):
 
 # ── Document Formatting ──────────────────────────────────────────────────────
 
+def _ordered_doc_fields(boost_fields=None, show_all=False):
+    """Show boosted fields first so `[RELEVANT]` tags survive truncation."""
+    if show_all or not boost_fields:
+        return list(RELATION_FIELDS)
+    boost_set = set(boost_fields)
+    boosted = [field for field in RELATION_FIELDS if field in boost_set]
+    others = [field for field in RELATION_FIELDS if field not in boost_set]
+    return boosted + others
+
+
+def _truncate_doc_part(part, remaining_chars):
+    """Fit one `field: content` segment into the remaining char budget."""
+    if remaining_chars <= 0:
+        return None
+    if len(part) <= remaining_chars:
+        return part
+    if remaining_chars < 12:
+        return None
+
+    if ": " in part:
+        prefix, content = part.split(": ", 1)
+        min_needed = len(prefix) + len(": ...")
+        if remaining_chars < min_needed:
+            return None
+        keep = remaining_chars - len(prefix) - len(": ...")
+        clipped = content[:keep].rstrip(" ,;")
+        if not clipped:
+            return None
+        return f"{prefix}: {clipped}..."
+
+    clipped = part[:remaining_chars - 3].rstrip(" ,;")
+    if not clipped:
+        return None
+    return f"{clipped}..."
+
+
 def format_doc(doc_json, boost_fields=None, max_items=5, show_all=False, max_chars=800):
     """Create compact doc string for LLM prompt.
 
-    Memory mode (default): all fields shown with content, boost_fields tagged [RELEVANT]
-    No-memory mode (show_all=True): all fields shown equally, no tags, capped at max_chars
+    Memory mode (default): boosted fields are shown first and tagged `[RELEVANT]`.
+    No-memory mode (show_all=True): all fields shown equally, no tags.
     """
     name = doc_json.get("name", "?")
     dtype = doc_json.get("type", "?")
@@ -101,21 +141,29 @@ def format_doc(doc_json, boost_fields=None, max_items=5, show_all=False, max_cha
 
     boost_set = set(boost_fields) if boost_fields else set()
 
-    for field in RELATION_FIELDS:
+    for field in _ordered_doc_fields(boost_fields, show_all=show_all):
         val = doc_json.get(field)
-        if val and isinstance(val, dict):
-            items = []
-            for subtype, lst in val.items():
-                if isinstance(lst, list):
-                    items.extend(lst[:max_items])
-            if items:
-                content = ', '.join(str(x) for x in items[:max_items])
-                if not show_all and field in boost_set:
-                    parts.append(f"[RELEVANT] {field}: {content}")
-                else:
-                    parts.append(f"{field}: {content}")
-                if sum(len(p) for p in parts) > max_chars:
-                    break
+        if not (val and isinstance(val, dict)):
+            continue
+
+        items = []
+        for subtype, lst in val.items():
+            if isinstance(lst, list):
+                items.extend(lst[:max_items])
+        if not items:
+            continue
+
+        content = ', '.join(str(x) for x in items[:max_items])
+        label = f"[RELEVANT] {field}" if not show_all and field in boost_set else field
+        candidate = f"{label}: {content}"
+        current_len = len("; ".join(parts))
+        remaining_chars = max_chars - current_len - 2
+        fitted = _truncate_doc_part(candidate, remaining_chars)
+        if fitted is None:
+            break
+        parts.append(fitted)
+        if fitted.endswith("..."):
+            break
 
     return "; ".join(parts)
 
@@ -126,7 +174,9 @@ def _has_effective_reroute(entry):
         return False
     boost = entry.get("boost_fields") or []
     suppress = entry.get("suppress_fields") or []
-    return bool(boost or suppress)
+    unmapped_boost = entry.get("unmapped_boost_fields") or []
+    unmapped_suppress = entry.get("unmapped_suppress_fields") or []
+    return bool(boost or suppress or unmapped_boost or unmapped_suppress)
 
 
 # ── Re-Ranking Prompt ────────────────────────────────────────────────────────
@@ -141,24 +191,182 @@ Score 0-10 where 0=completely irrelevant, 10=perfect match.
 Output ONLY the number."""
 
 
+DISC_PROMPT = """\
+Query: "{query}"
+
+Discrimination rule for this query type:
+{discrimination_block}
+
+Document: {doc_text}
+
+Apply the discrimination rule above. Score 0-10 where 0=completely irrelevant, 10=perfect match including the negation constraint.
+Output ONLY the number."""
+
+
+# ── Tournament Rerank (Session Memory v2) ────────────────────────────────────
+
+TOURNAMENT_PROMPT = """\
+Query: "{query}"
+
+Below are candidate documents for this query. The current leaders survived earlier rounds; the new candidates are being evaluated now.
+
+Current leaders:
+{leaders_block}
+
+New candidates:
+{new_block}
+
+Task: pick the best {K} documents for this query, considering any negation constraint. Output ONLY {K} unique bracketed IDs, best first, separated by ` > `.
+Example:
+{example_format}
+
+Each ID must be one of L1..L{K_leaders} (leaders) or N1..N{B} (new candidates). No other text."""
+
+TOURNAMENT_RETRY_HINT = (
+    "\n\nStrict format: output exactly {K} unique bracketed IDs separated by ` > `, "
+    "for example {example_format}. Use only the IDs listed above. No other text."
+)
+
+
+# ── Discrimination Memory (v3) ───────────────────────────────────────────────
+
+_DISC_CACHE = None
+
+
+def load_discrimination_rules(path=DISCRIMINATION_RULES_PATH):
+    """Lazy-load discrimination_rules.json. Returns {group_key: rule_dict}."""
+    global _DISC_CACHE
+    if _DISC_CACHE is not None:
+        return _DISC_CACHE
+    if not os.path.exists(path):
+        print(f"  WARNING: no discrimination rules at {path}")
+        _DISC_CACHE = {}
+        return _DISC_CACHE
+    with open(path) as f:
+        data = json.load(f)
+    _DISC_CACHE = data.get("rules", {})
+    print(f"  Loaded {len(_DISC_CACHE)} discrimination rules from {path}")
+    return _DISC_CACHE
+
+
+def _format_discrimination_block(rule):
+    """Render a discrimination rule as a concise prompt block."""
+    parts = []
+    if rule.get("pattern"):
+        parts.append(f"Pattern: {rule['pattern']}")
+    parts.append(f"Rule: {rule['discrimination_rule']}")
+    if rule.get("common_trap"):
+        parts.append(f"Common trap: {rule['common_trap']}")
+    ex = rule.get("example") or {}
+    if ex.get("gold") and ex.get("distractor"):
+        parts.append(f"Example gold: {ex['gold']}")
+        parts.append(f"Example distractor: {ex['distractor']}")
+    return "\n".join(parts)
+
+
+def get_discrimination_block(answer_type, negation_pattern, rules=None):
+    """Return the prompt block for this (answer_type, negation_pattern) or None if no rule."""
+    if rules is None:
+        rules = load_discrimination_rules()
+    if not rules or not answer_type or not negation_pattern:
+        return None
+    group_key = f"{answer_type.lower()}|{negation_pattern}"
+    rule = rules.get(group_key)
+    if rule is None:
+        return None
+    return _format_discrimination_block(rule)
+
+
+_RERANK_SCORE_PATTERNS = [
+    re.compile(r"^\s*(\d+(?:\.\d+)?)\s*(?:/10)?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*score\s*[:=]\s*(\d+(?:\.\d+)?)\s*(?:/10)?(?:\b|$)", re.IGNORECASE),
+    re.compile(r"\bscore(?:\s+is)?\s*(\d+(?:\.\d+)?)\s*(?:/10)?(?:\b|$)", re.IGNORECASE),
+]
+
+_CALL_ERROR_MARKERS = (
+    "http error",
+    "internal server error",
+    "timed out",
+    "timeout",
+    "connection refused",
+    "connection reset",
+    "remote end closed connection",
+    "service unavailable",
+    "temporary failure",
+    "name or service not known",
+    "nodename nor servname",
+    "[errno",
+)
+
+
+def _parse_score_candidate(text):
+    """Return a parsed score if this text looks like a score-bearing line."""
+    for pattern in _RERANK_SCORE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            score = float(match.group(1))
+            return max(0.0, min(10.0, score))
+    return None
+
+
+def _looks_like_call_error(raw_text):
+    """Best-effort legacy error detection for cache rows without explicit status."""
+    lowered = str(raw_text).strip().lower()
+    if not lowered:
+        return False
+    return any(marker in lowered for marker in _CALL_ERROR_MARKERS)
+
+
+def _rerank_entry_status(entry):
+    """Return `ok` or `error`, inferring legacy rows when needed."""
+    status = entry.get("status")
+    if status in {"ok", "error"}:
+        return status
+    if _looks_like_call_error(entry.get("raw", "")):
+        return "error"
+    return "ok"
+
+
 def parse_rerank_score(raw_output):
-    """Parse LLM output to a float score 0-10."""
+    """Parse LLM output to a float score 0-10.
+
+    Be conservative: prefer a standalone score line or an explicit `Score: X`
+    label, and avoid grabbing unrelated numbers like years.
+    """
     cleaned = re.sub(r"<think>.*?</think>", "", raw_output, flags=re.DOTALL)
     cleaned = cleaned.strip()
-    # Extract first number
-    match = re.search(r"(\d+(?:\.\d+)?)", cleaned)
-    if match:
-        score = float(match.group(1))
-        return max(0.0, min(10.0, score))
+
+    candidates = [cleaned]
+    candidates.extend(line.strip() for line in cleaned.splitlines() if line.strip())
+    for candidate in candidates:
+        score = _parse_score_candidate(candidate)
+        if score is not None:
+            return score
     return 5.0  # neutral fallback
+
+
+def _stable_qid_seed(qid):
+    """Deterministic seed for per-query tournament shuffling."""
+    digest = hashlib.md5(str(qid).encode("utf-8")).hexdigest()
+    return int(digest[:8], 16)
 
 
 # ── Scoring ──────────────────────────────────────────────────────────────────
 
-def score_one(qid, docid, query, doc_json, boost_fields, model, endpoint, show_all=False):
-    """Score a single (query, doc) pair via Qwen3."""
+def score_one(qid, docid, query, doc_json, boost_fields, model, endpoint, show_all=False, discrimination_block=None):
+    """Score a single (query, doc) pair via Qwen3.
+
+    If `discrimination_block` is provided, uses DISC_PROMPT (memory v3).
+    Else uses RERANK_PROMPT with `[RELEVANT]` tags driven by boost_fields.
+    """
     doc_text = format_doc(doc_json, boost_fields, show_all=show_all)
-    prompt = RERANK_PROMPT.replace("{query}", query).replace("{doc_text}", doc_text)
+    if discrimination_block:
+        prompt = (DISC_PROMPT
+                  .replace("{query}", query)
+                  .replace("{discrimination_block}", discrimination_block)
+                  .replace("{doc_text}", doc_text))
+    else:
+        prompt = RERANK_PROMPT.replace("{query}", query).replace("{doc_text}", doc_text)
     try:
         raw = call_ollama(prompt, model, endpoint, max_tokens=5)
         score = parse_rerank_score(raw)
@@ -167,8 +375,10 @@ def score_one(qid, docid, query, doc_json, boost_fields, model, endpoint, show_a
             "docid": docid,
             "llm_score": score,
             "raw": raw,
+            "status": "ok",
             "doc_format_version": DOC_FORMAT_VERSION,
             "no_memory": show_all,
+            "memory_mode": "discrimination" if discrimination_block else ("none" if show_all else "relevant_tag"),
         }
     except Exception as e:
         return {
@@ -176,12 +386,123 @@ def score_one(qid, docid, query, doc_json, boost_fields, model, endpoint, show_a
             "docid": docid,
             "llm_score": 5.0,
             "raw": str(e),
+            "status": "error",
             "doc_format_version": DOC_FORMAT_VERSION,
             "no_memory": show_all,
+            "memory_mode": "discrimination" if discrimination_block else ("none" if show_all else "relevant_tag"),
         }
 
 
-def load_rerank_cache(cache_path, no_memory=False):
+def _parse_tournament_output(raw, valid_ids):
+    """Extract ordered list of IDs from LLM output. Returns list of valid IDs, deduped, in order."""
+    cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL)
+    matches = re.findall(r"\[?(L\d+|N\d+)\]?", cleaned)
+    seen = set()
+    out = []
+    for m in matches:
+        if m in valid_ids and m not in seen:
+            seen.add(m)
+            out.append(m)
+    return out
+
+
+def tournament_rerank_one_query(qid, query, docs, model, endpoint, K=5, B=10):
+    """Rolling top-K tournament rerank for a single query.
+
+    docs: list of (docid, doc_json, mfar_score) in mFAR rank order (rank 0 first).
+    Returns (result_dict, parse_failures).
+    result_dict: {docid: {"tournament_rank": int|None, "llm_score": float}}.
+    """
+    rng = random.Random(_stable_qid_seed(qid))
+
+    # Seed: mFAR top-K as initial leaders; no LLM call for round 0.
+    running_topk = list(docs[:K])
+    remaining = list(docs[K:])
+    rng.shuffle(remaining)
+
+    parse_failures = 0
+    rounds = max(0, (len(remaining) + B - 1) // B)
+
+    for round_idx in range(rounds):
+        batch = remaining[round_idx * B : (round_idx + 1) * B]
+        if not batch:
+            break
+        rng.shuffle(batch)
+
+        K_leaders = len(running_topk)
+        leaders_lines = [f"[L{i+1}] {format_doc(d[1], show_all=True)}"
+                         for i, d in enumerate(running_topk)]
+        new_lines = [f"[N{i+1}] {format_doc(d[1], show_all=True)}"
+                     for i, d in enumerate(batch)]
+        ordered_ids = (
+            [f"L{i+1}" for i in range(K_leaders)] +
+            [f"N{i+1}" for i in range(len(batch))]
+        )
+        example_format = " > ".join(f"[{pid}]" for pid in ordered_ids[:K])
+
+        prompt = (TOURNAMENT_PROMPT
+                  .replace("{query}", query)
+                  .replace("{leaders_block}", "\n".join(leaders_lines))
+                  .replace("{new_block}", "\n".join(new_lines))
+                  .replace("{K_leaders}", str(K_leaders))
+                  .replace("{K}", str(K))
+                  .replace("{B}", str(len(batch)))
+                  .replace("{example_format}", example_format))
+
+        valid_ids = ({f"L{i+1}" for i in range(K_leaders)} |
+                     {f"N{i+1}" for i in range(len(batch))})
+
+        parsed = []
+        try:
+            raw = call_ollama(prompt, model, endpoint, max_tokens=80)
+            parsed = _parse_tournament_output(raw, valid_ids)
+            if len(parsed) < K:
+                retry_hint = (TOURNAMENT_RETRY_HINT
+                              .replace("{K}", str(K))
+                              .replace("{example_format}", example_format))
+                raw2 = call_ollama(prompt + retry_hint, model, endpoint, max_tokens=80)
+                parsed2 = _parse_tournament_output(raw2, valid_ids)
+                if len(parsed2) >= len(parsed):
+                    parsed = parsed2
+        except Exception:
+            pass
+
+        if len(parsed) < K:
+            parse_failures += 1
+            continue  # keep running_topk unchanged
+
+        id_to_doc = {}
+        for i, d in enumerate(running_topk):
+            id_to_doc[f"L{i+1}"] = d
+        for i, d in enumerate(batch):
+            id_to_doc[f"N{i+1}"] = d
+        running_topk = [id_to_doc[pid] for pid in parsed[:K]]
+
+    # Assign banded scores
+    topk_ids = {d[0] for d in running_topk}
+    result = {}
+    # Top-K: rank 1..K → score 10..(10-K+1). With K=5: {10, 9, 8, 7, 6}. Band [6,10].
+    for rank_idx, (docid, _, _) in enumerate(running_topk):
+        tournament_rank = rank_idx + 1
+        llm_score = 10.0 - (tournament_rank - 1)
+        result[docid] = {"tournament_rank": tournament_rank, "llm_score": llm_score}
+
+    # Eliminated: rescale their mFAR scores into [0, 4]
+    eliminated = [(d[0], d[2]) for d in docs if d[0] not in topk_ids]
+    if eliminated:
+        mfar_vals = [m for _, m in eliminated]
+        mn, mx = min(mfar_vals), max(mfar_vals)
+        for docid, mfar in eliminated:
+            if mx - mn < 1e-8:
+                score = 2.0
+            else:
+                score = (mfar - mn) / (mx - mn) * 4.0
+            result[docid] = {"tournament_rank": None, "llm_score": score}
+
+    return result, parse_failures
+
+
+def load_rerank_cache(cache_path, no_memory=False, memory_mode=None):
     """Load existing rerank cache. Returns {(qid, docid): score}."""
     cache = {}
     if os.path.exists(cache_path):
@@ -191,6 +512,10 @@ def load_rerank_cache(cache_path, no_memory=False):
                 if entry.get("doc_format_version") != DOC_FORMAT_VERSION:
                     continue
                 if bool(entry.get("no_memory", False)) != bool(no_memory):
+                    continue
+                if memory_mode is not None and entry.get("memory_mode") != memory_mode:
+                    continue
+                if _rerank_entry_status(entry) != "ok":
                     continue
                 cache[(entry["qid"], entry["docid"])] = entry["llm_score"]
     return cache
@@ -245,8 +570,21 @@ def batch_score(split, model, endpoints, workers, top_k=50, memory_version=None,
     baseline_path = BASELINE_QRES[split]
     retrieved = load_retrieved(baseline_path)
 
+    # Discrimination memory (v3): load rules once per batch
+    use_discrimination = (memory_version or "").startswith("discrimination") and not no_memory
+    disc_rules = load_discrimination_rules() if use_discrimination else {}
+
+    # Session-memory tournament rerank: uses memory_v1 Stage 1+2 cache for routing gate
+    use_session = (memory_version or "").startswith("session") and not no_memory
+
     # Load Stage 1+2 cache (may be from a different model than the reranker)
-    qwen3_cache = _load_qwen3_cache(split, memory_version=memory_version, detect_model=detect_tag)
+    # For "discrimination" / "session" memory_versions, the Stage 1+2 cache is the same as memory_v1
+    # (we reuse existing Stage 2 outputs; only Stage 3 scoring differs).
+    if use_discrimination or use_session:
+        stage12_version = "memory_v1"
+    else:
+        stage12_version = memory_version
+    qwen3_cache = _load_qwen3_cache(split, memory_version=stage12_version, detect_model=detect_tag)
 
     # Collect (qid, docid) pairs to score
     stage1_flagged_qids = {qid for qid, e in qwen3_cache.items() if e.get("needs_reroute")}
@@ -276,13 +614,80 @@ def batch_score(split, model, endpoints, workers, top_k=50, memory_version=None,
         rerank_cache_dir = os.path.join(BASE_CACHE_DIR, "rerank", tag)
     os.makedirs(rerank_cache_dir, exist_ok=True)
     cache_path = os.path.join(rerank_cache_dir, f"rerank_cache_{split}.jsonl")
+    expected_cache_mode = "tournament" if use_session else None
     existing = {
         key: score
-        for key, score in load_rerank_cache(cache_path, no_memory=no_memory).items()
+        for key, score in load_rerank_cache(
+            cache_path,
+            no_memory=no_memory,
+            memory_mode=expected_cache_mode,
+        ).items()
         if key[0] in rerouted_qids
     }
     remaining = [(qid, did) for qid, did in pairs if (qid, did) not in existing]
     print(f"  Cache has {len(existing)} entries, {len(remaining)} remaining")
+
+    if use_session:
+        # Per-query tournament: a qid is rerun if ANY of its top-K docs is missing from cache.
+        qids_all = sorted(rerouted_qids)
+        qids_to_run = []
+        for qid in qids_all:
+            docids = [d for d, _ in retrieved.get(qid, [])[:top_k]]
+            if not all((qid, did) in existing for did in docids):
+                qids_to_run.append(qid)
+        print(f"  Session tournament: {len(qids_all) - len(qids_to_run)} cached, {len(qids_to_run)} to run")
+        if not qids_to_run:
+            print("  All queries already tournament-scored")
+            return existing
+
+        write_lock = threading.Lock()
+        done = [0]
+        parse_fail_total = [0]
+
+        with open(cache_path, "a") as f:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                futures = {}
+                for i, qid in enumerate(qids_to_run):
+                    ep = endpoints[i % len(endpoints)]
+                    docs_list = []
+                    for did, mfar in retrieved.get(qid, [])[:top_k]:
+                        doc_json = corpus.get(did, {"name": "?", "type": "?"})
+                        docs_list.append((did, doc_json, float(mfar)))
+                    fut = pool.submit(tournament_rerank_one_query,
+                                      qid, queries[qid], docs_list, model, ep)
+                    futures[fut] = qid
+
+                for future in as_completed(futures):
+                    qid = futures[future]
+                    try:
+                        result, pf = future.result()
+                    except Exception as e:
+                        with write_lock:
+                            print(f"  Tournament failed for qid={qid}: {e}")
+                        continue
+                    with write_lock:
+                        for docid, info in result.items():
+                            entry = {
+                                "qid": qid,
+                                "docid": docid,
+                                "llm_score": info["llm_score"],
+                                "tournament_rank": info["tournament_rank"],
+                                "raw": "",
+                                "doc_format_version": DOC_FORMAT_VERSION,
+                                "no_memory": False,
+                                "memory_mode": "tournament",
+                            }
+                            f.write(json.dumps(entry) + "\n")
+                            existing[(qid, docid)] = info["llm_score"]
+                        f.flush()
+                        parse_fail_total[0] += pf
+                        done[0] += 1
+                        if done[0] % 50 == 0:
+                            print(f"  Tournament: {done[0]}/{len(qids_to_run)} queries  "
+                                  f"(parse fails so far: {parse_fail_total[0]})")
+
+        print(f"  Done: {done[0]} tournaments, total parse failures: {parse_fail_total[0]}")
+        return existing
 
     if not remaining:
         print("  All pairs already scored")
@@ -291,6 +696,7 @@ def batch_score(split, model, endpoints, workers, top_k=50, memory_version=None,
     # Score with thread pool
     write_lock = threading.Lock()
     done = [0]
+    error_count = [0]
 
     with open(cache_path, "a") as f:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -300,7 +706,13 @@ def batch_score(split, model, endpoints, workers, top_k=50, memory_version=None,
                 qentry = qwen3_cache.get(qid, {})
                 boost = [] if no_memory else qentry.get("boost_fields", [])
                 doc_json = corpus.get(docid, {"name": "?", "type": "?"})
-                fut = pool.submit(score_one, qid, docid, queries[qid], doc_json, boost, model, ep, show_all=no_memory)
+                disc_block = None
+                if use_discrimination:
+                    disc_block = get_discrimination_block(
+                        qentry.get("answer_type"), qentry.get("negation_pattern"),
+                        rules=disc_rules)
+                fut = pool.submit(score_one, qid, docid, queries[qid], doc_json, boost, model, ep,
+                                  show_all=no_memory, discrimination_block=disc_block)
                 futures[fut] = (qid, docid)
 
             for future in as_completed(futures):
@@ -308,12 +720,16 @@ def batch_score(split, model, endpoints, workers, top_k=50, memory_version=None,
                 with write_lock:
                     f.write(json.dumps(entry) + "\n")
                     f.flush()
-                    existing[(entry["qid"], entry["docid"])] = entry["llm_score"]
+                    if entry.get("status") == "ok":
+                        existing[(entry["qid"], entry["docid"])] = entry["llm_score"]
+                    else:
+                        error_count[0] += 1
                     done[0] += 1
                     if done[0] % 500 == 0:
-                        print(f"  Scored {done[0]}/{len(remaining)}")
+                        print(f"  Scored {done[0]}/{len(remaining)} "
+                              f"({error_count[0]} errors)")
 
-    print(f"  Done: {len(existing)} total scored")
+    print(f"  Done: {len(existing)} cached scores, {error_count[0]} errors")
     return existing
 
 
@@ -563,11 +979,24 @@ def main():
                     cache_path = os.path.join(BASE_CACHE_DIR, "rerank", tag, memory_label, f"rerank_cache_{split}.jsonl")
                 else:
                     cache_path = os.path.join(BASE_CACHE_DIR, "rerank", tag, f"rerank_cache_{split}.jsonl")
-                rerank_scores = load_rerank_cache(cache_path, no_memory=getattr(args, "no_memory", False))
+                cache_mode = None
+                mv = (args.memory_version or "")
+                if mv.startswith("session") and not getattr(args, "no_memory", False):
+                    cache_mode = "tournament"
+                rerank_scores = load_rerank_cache(
+                    cache_path,
+                    no_memory=getattr(args, "no_memory", False),
+                    memory_mode=cache_mode,
+                )
                 print(f"  Loaded {len(rerank_scores)} rerank scores from {cache_path}")
 
                 detect_tag = _model_tag(getattr(args, 'detect_model', None) or args.model)
-                qwen3_cache = _load_qwen3_cache(split, memory_version=args.memory_version, detect_model=detect_tag)
+                # Discrimination / session modes reuse memory_v1 Stage 1+2 cache
+                stage12_ver = args.memory_version
+                if (mv.startswith("discrimination") or mv.startswith("session")) \
+                        and not getattr(args, "no_memory", False):
+                    stage12_ver = "memory_v1"
+                qwen3_cache = _load_qwen3_cache(split, memory_version=stage12_ver, detect_model=detect_tag)
                 merge_and_write_qres(split, rerank_scores, qwen3_cache,
                                      alpha=alpha, top_k=args.top_k, output_dir=out_dir)
 
@@ -575,11 +1004,17 @@ def main():
             print(f"\n  Evaluating α={alpha} → {out_dir}")
             from failure_analysis.type_b_memory.rerank.scoring.evaluate import main as eval_main
             eval_args = ["evaluate_memory.py",
-                         "--baseline_dir", "output/prime_eval",
+                         "--baseline_dir", "output/contriever/prime_eval",
                          "--memory_dir", out_dir,
                          "--splits"] + args.splits
             if args.memory_version:
-                eval_args += ["--memory_version", args.memory_version]
+                # For discrimination / session modes, evaluate's grouping uses memory_v1 Stage 1+2 cache
+                eval_mem_ver = args.memory_version
+                mv = args.memory_version
+                if (mv.startswith("discrimination") or mv.startswith("session")) \
+                        and not getattr(args, "no_memory", False):
+                    eval_mem_ver = "memory_v1"
+                eval_args += ["--memory_version", eval_mem_ver]
             dm = getattr(args, 'detect_model', None) or args.model
             eval_args += ["--detect_model", dm.replace(":", "_").replace("/", "_")]
             sys.argv = eval_args

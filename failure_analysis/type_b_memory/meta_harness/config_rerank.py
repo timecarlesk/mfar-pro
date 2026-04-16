@@ -31,9 +31,9 @@ BASE_CACHE_DIR = "output/failure_analysis/type_b_memory/cache"
 BASE_RUNS_DIR = "output/failure_analysis/type_b_memory/runs"
 
 BASELINE_QRES = {
-    "val": "output/prime_eval/final-all-0.qres",
-    "test": "output/prime_eval/final-additional-all-0.qres",
-    "train-dev": "output/prime_eval/final-train-dev-all-0.qres",
+    "val": "output/contriever/prime_eval/final-all-0.qres",
+    "test": "output/contriever/prime_eval/final-additional-all-0.qres",
+    "train-dev": "output/contriever/prime_eval/final-train-dev-all-0.qres",
 }
 
 
